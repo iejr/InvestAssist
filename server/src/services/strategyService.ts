@@ -5,6 +5,11 @@ import { appendCsvRow } from '../utils/file';
 
 const STRATEGY_FILE = path.join(__dirname, '../../data/strategies.json');
 
+export async function getAllStrategies() {
+  const raw = await fs.readFile(STRATEGY_FILE, 'utf-8').catch(() => '[]');
+  return JSON.parse(raw);
+}
+
 export async function createStrategy({ name, start_date, interval, increment, security }: any) {
   const strategy_id = uuidv4();
   const newStrategy = { strategy_id, name, start_date, interval, increment, security };

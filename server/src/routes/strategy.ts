@@ -1,6 +1,11 @@
 import express from 'express';
-import { createStrategy, addAsset } from '../services/strategyService';
+import { getAllStrategies, createStrategy, addAsset } from '../services/strategyService';
 const router = express.Router();
+
+router.get('/', async (req, res) => {
+  const strategies = await getAllStrategies();
+  res.json(strategies);
+});
 
 router.post('/', async (req, res) => {
   const strategy = await createStrategy(req.body);
