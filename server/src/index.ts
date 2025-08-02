@@ -2,6 +2,7 @@ import express from 'express';
 import strategyRoutes from './routes/strategy';
 import priceRoutes from './routes/price';
 import historyRoutes from './routes/history';
+import securityRoutes from './routes/security';
 
 const app = express();
 const PORT = 3000;
@@ -11,6 +12,7 @@ app.use(express.json());
 app.use('/strategy', strategyRoutes);
 app.use('/price', priceRoutes);
 app.use('/history', historyRoutes);
+app.use('/securities', securityRoutes);
 
 app.listen(PORT, () => {
   console.log(`VA Simulator Backend running on port ${PORT}`);

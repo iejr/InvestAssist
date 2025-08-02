@@ -2,6 +2,7 @@ import fs from 'fs/promises';
 import path from 'path';
 import { v4 as uuidv4 } from 'uuid';
 import { appendCsvRow } from '../utils/file';
+import { isValidSecurity } from '../utils/security';
 
 const STRATEGY_FILE = path.join(__dirname, '../../data/strategies.json');
 
@@ -11,6 +12,10 @@ export async function getAllStrategies() {
 }
 
 export async function createStrategy({ name, start_date, interval, increment, security }: any) {
+  if (!isValidSecurity(security)) {
+    throw new Error(`Unsupported security: ${security}`);
+  }
+
   const strategy_id = uuidv4();
   const newStrategy = { strategy_id, name, start_date, interval, increment, security };
   const raw = await fs.readFile(STRATEGY_FILE, 'utf-8').catch(() => '[]');
