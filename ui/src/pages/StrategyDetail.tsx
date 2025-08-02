@@ -15,6 +15,15 @@ import {
 
 ChartJS.register(LineElement, CategoryScale, LinearScale, PointElement, Tooltip, Legend);
 
+interface Strategy {
+  strategy_id: string;
+  name: string;
+  start_date: string;
+  interval: string;
+  increment: number;
+  security: string;
+}
+
 interface HistoryPoint {
   date: string;
   actual_value: number;
@@ -24,10 +33,18 @@ interface HistoryPoint {
 export default function StrategyDetail() {
   const { id } = useParams();
   const [data, setData] = useState<HistoryPoint[]>([]);
+  const [strategy, setStrategy] = useState<Strategy | null>(null);
 
   useEffect(() => {
     axios.get(`/history/${id}`)
       .then(res => setData(res.data))
+      .catch(err => console.error(err));
+
+    axios.get(`/strategy`)
+      .then(res => {
+        const match = res.data.find((s: Strategy) => s.strategy_id === id);
+        setStrategy(match);
+      })
       .catch(err => console.error(err));
   }, [id]);
 
@@ -75,7 +92,7 @@ export default function StrategyDetail() {
 
   const handlePriceUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (!file) return;
+    if (!file || !strategy?.security) return;
 
     Papa.parse(file, {
       header: true,
@@ -85,7 +102,8 @@ export default function StrategyDetail() {
           date: row.date,
           price: parseFloat(row.price),
         }));
-        await axios.post(`/price/SPY500`, priceData);
+        await axios.post(`/price/${strategy.security}`, priceData);
+
         // Refresh history
         const updated = await axios.get(`/history/${id}`);
         setData(updated.data);

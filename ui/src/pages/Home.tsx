@@ -18,7 +18,10 @@ export default function Home() {
     start_date: '',
     interval: 'weekly',
     increment: '',
+    security: '',
   });
+
+  const [securities, setSecurities] = useState<string[]>([]);
 
   const fetchStrategies = () => {
     axios.get('/strategy')
@@ -28,6 +31,9 @@ export default function Home() {
 
   useEffect(() => {
     fetchStrategies();
+    axios.get('/securities')
+      .then(res => setSecurities(res.data))
+      .catch(err => console.error('Failed to load securities:', err));
   }, []);
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
@@ -40,10 +46,9 @@ export default function Home() {
     const newStrategy = {
       ...form,
       increment: parseFloat(form.increment),
-      security: 'SPY500',
     };
     await axios.post('/strategy', newStrategy);
-    setForm({ name: '', start_date: '', interval: 'weekly', increment: '' });
+    setForm({ name: '', start_date: '', interval: 'weekly', increment: '', security: 'SPY500' });
     fetchStrategies();
   };
 
@@ -92,6 +97,18 @@ export default function Home() {
           className="w-full border px-2 py-1"
           required
         />
+
+        <select
+          name="security"
+          value={form.security}
+          onChange={handleChange}
+          className="w-full border px-2 py-1"
+          required
+        >
+          {securities.map(sec => (
+            <option key={sec} value={sec}>{sec}</option>
+          ))}
+        </select>
 
         <button
           type="submit"

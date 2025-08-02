@@ -8,6 +8,7 @@ export default defineConfig({
       '/strategy': 'http://localhost:3000',
       '/price': 'http://localhost:3000',
       '/history': 'http://localhost:3000',
+      '/securities': 'http://localhost:3000',
     }
   }
 })
