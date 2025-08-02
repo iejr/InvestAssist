@@ -2,6 +2,7 @@ import { useParams } from 'react-router-dom';
 import { useEffect, useState } from 'react';
 import axios from 'axios';
 import { Line } from 'react-chartjs-2';
+import Papa from 'papaparse';
 import {
   Chart as ChartJS,
   LineElement,
@@ -50,11 +51,67 @@ export default function StrategyDetail() {
     ],
   };
 
+  // Upload CSV handlers
+  const handleAssetUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file || !id) return;
+
+    Papa.parse(file, {
+      header: true,
+      skipEmptyLines: true,
+      complete: async (results: Papa.ParseResult<any>) => {
+        for (const row of results.data) {
+          await axios.post(`/strategy/${id}/asset`, {
+            date: row.date,
+            shares: parseFloat(row.shares),
+          });
+        }
+        // Refresh history
+        const updated = await axios.get(`/history/${id}`);
+        setData(updated.data);
+      },
+    });
+  };
+
+  const handlePriceUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    Papa.parse(file, {
+      header: true,
+      skipEmptyLines: true,
+      complete: async (results: Papa.ParseResult<any>) => {
+        const priceData = results.data.map(row => ({
+          date: row.date,
+          price: parseFloat(row.price),
+        }));
+        await axios.post(`/price/SPY500`, priceData);
+        // Refresh history
+        const updated = await axios.get(`/history/${id}`);
+        setData(updated.data);
+      },
+    });
+  };
+
+
   return (
     <div className="p-4 max-w-4xl mx-auto">
       <h1 className="text-2xl font-bold mb-4">Strategy #{id}</h1>
+
       <div className="bg-white p-4 shadow rounded">
         <Line data={chartData} />
+      </div>
+
+      <div className="bg-white p-4 shadow rounded space-y-4">
+        <div>
+          <label className="font-semibold block mb-1">Upload Asset CSV</label>
+          <input type="file" accept=".csv" onChange={handleAssetUpload} />
+        </div>
+
+        <div>
+          <label className="font-semibold block mb-1">Upload Price CSV</label>
+          <input type="file" accept=".csv" onChange={handlePriceUpload} />
+        </div>
       </div>
     </div>
   );
