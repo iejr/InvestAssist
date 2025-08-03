@@ -17,6 +17,7 @@ export async function getHistory(strategyId: string) {
 
   const dateSeq = getDateSequence(strategy.start_date, strategy.interval);
   let totalShares = 0;
+  let initialExpectValue = -1;
 
   const result = dateSeq.map(date => {
     const assetEntry = assets.find(a => a[0] === date);
@@ -25,11 +26,14 @@ export async function getHistory(strategyId: string) {
     const priceEntry = prices.find(p => p[0] === date);
     const price = priceEntry ? parseFloat(priceEntry[1]) : 0;
 
-    const actual_value = totalShares * price;
+    const actualValue = totalShares * price;
+    if (initialExpectValue == -1) {
+      initialExpectValue = actualValue;
+    }
     const intervalCount = dateSeq.indexOf(date);
-    const expected_value = intervalCount * strategy.increment;
+    const expectedValue = intervalCount * strategy.increment + initialExpectValue;
 
-    return { date, actual_value, expected_value };
+    return { date, actualValue, expectedValue };
   });
 
   return result;
