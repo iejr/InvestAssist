@@ -26,8 +26,8 @@ interface Strategy {
 
 interface HistoryPoint {
   date: string;
-  actual_value: number;
-  expected_value: number;
+  actualValue: number;
+  expectedValue: number;
 }
 
 export default function StrategyDetail() {
@@ -53,14 +53,14 @@ export default function StrategyDetail() {
     datasets: [
       {
         label: 'Actual Value',
-        data: data.map(d => d.actual_value),
+        data: data.map(d => d.actualValue),
         borderColor: 'rgb(59, 130, 246)',
         backgroundColor: 'rgba(59, 130, 246, 0.3)',
         tension: 0.3,
       },
       {
         label: 'Expected Value',
-        data: data.map(d => d.expected_value),
+        data: data.map(d => d.expectedValue),
         borderColor: 'rgb(34, 197, 94)',
         backgroundColor: 'rgba(34, 197, 94, 0.3)',
         tension: 0.3,
