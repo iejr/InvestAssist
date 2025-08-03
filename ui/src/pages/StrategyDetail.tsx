@@ -30,10 +30,18 @@ interface HistoryPoint {
   expectedValue: number;
 }
 
+interface StrategySummary {
+  current_value: number;
+  total_cash_invested: number;
+  gain_loss: number;
+  next_investment: number;
+}
+
 export default function StrategyDetail() {
   const { id } = useParams();
   const [data, setData] = useState<HistoryPoint[]>([]);
   const [strategy, setStrategy] = useState<Strategy | null>(null);
+  const [summary, setSummary] = useState<null | StrategySummary>(null);
 
   useEffect(() => {
     axios.get(`/history/${id}`)
@@ -45,6 +53,10 @@ export default function StrategyDetail() {
         const match = res.data.find((s: Strategy) => s.strategy_id === id);
         setStrategy(match);
       })
+      .catch(err => console.error(err));
+
+    axios.get(`/summary/${id}`)
+      .then(res => setSummary(res.data))
       .catch(err => console.error(err));
   }, [id]);
 
@@ -119,6 +131,15 @@ export default function StrategyDetail() {
       <div className="bg-white p-4 shadow rounded">
         <Line data={chartData} />
       </div>
+
+      {summary && (
+        <div className="bg-gray-50 p-4 border rounded shadow mb-6 space-y-1 text-sm">
+          <p><strong>Final Portfolio Value:</strong> ${summary.current_value.toFixed(2)}</p>
+          <p><strong>Total Cash Invested:</strong> ${summary.total_cash_invested.toFixed(2)}</p>
+          <p><strong>Total Gain/Loss:</strong> ${summary.gain_loss.toFixed(2)}</p>
+          <p><strong>Next Required Investment:</strong> ${summary.next_investment.toFixed(2)}</p>
+        </div>
+      )}
 
       <div className="bg-white p-4 shadow rounded space-y-4">
         <div>
