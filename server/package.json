@@ -11,6 +11,8 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
+    "csv-parse": "^6.1.0",
+    "csv-stringify": "^6.6.0",
     "date-fns": "^4.1.0",
     "express": "^5.1.0",
     "uuid": "^11.1.0"
