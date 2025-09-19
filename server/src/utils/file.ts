@@ -17,7 +17,6 @@ export async function parseCsvFile(filePath: string): Promise<string[][]> {
 }
 
 export async function parseCsvFileAlter<T>(filePath: string): Promise<T[]> {
-  // if (!fs.existsSync(filePath)) return [];
   const content = await fs.readFile(filePath, 'utf-8');
   return parse(content, { columns: true, skip_empty_lines: true });
 }

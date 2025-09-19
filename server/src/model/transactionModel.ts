@@ -1,5 +1,5 @@
 export interface transactionModel {
-    timestamp: Date;
+    timestamp: string;
     security: string;
     type: 'BUY' | 'SELL';
     shares: number;
