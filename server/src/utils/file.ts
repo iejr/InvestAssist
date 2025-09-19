@@ -1,4 +1,5 @@
 import fs from 'fs/promises';
+import { parse } from 'csv-parse/sync';
 
 export async function appendCsvRow(filePath: string, row: Array<string | number>) {
   const line = row.join(',') + '\n';
@@ -13,4 +14,9 @@ export async function appendCsvRows(filePath: string, rows: Array<Array<string |
 export async function parseCsvFile(filePath: string): Promise<string[][]> {
   const raw = await fs.readFile(filePath, 'utf-8');
   return raw.trim().split('\n').map(line => line.split(','));
+}
+
+export async function parseCsvFileAlter<T>(filePath: string): Promise<T[]> {
+  const content = await fs.readFile(filePath, 'utf-8');
+  return parse(content, { columns: true, skip_empty_lines: true });
 }
