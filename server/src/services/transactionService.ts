@@ -27,31 +27,33 @@ export function saveTransactions(userId: string, transactions: Array<Array<strin
   appendCsvRows(file, transactions);
 }
 
-export async function computeHoldings(userId: string, securityId: string, dates: Date[]): Promise<Array<number>> {
+export async function computeHoldings(userId: string, securityId: string, dates: Date[]): Promise<Array<[number, number]>> {
   const transactions = await loadTransactions(userId, securityId);
-  const holdings: number[] = [];
+  const result: [number, number][] = [];
 
   dates.sort((e1, e2) => e1.getTime() - e2.getTime());
 
   let dateIdx = 0;
   let holding = 0;
+  let cost = 0;
   for (const t of transactions) {
     if (dateIdx >= dates.length) break;
 
     const txDate = new Date(t.timestamp);
     while (dates[dateIdx] < txDate) {
-      holdings.push(holding);
+      result.push([holding, cost]);
       dateIdx++;
     }
 
     const shares = t.type === 'BUY' ? t.shares : -t.shares;
     holding += Number(shares);
+    cost += Number(shares) * Number(t.price);
   }
 
   while (dateIdx < dates.length) {
-    holdings.push(holding);
+    result.push([holding, cost]);
     dateIdx++;
   }
 
-  return holdings;
+  return result;
 }

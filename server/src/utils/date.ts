@@ -12,3 +12,13 @@ export function getDateSequence(start: string, interval: 'weekly' | 'monthly'): 
 
   return result;
 }
+
+export function getIntervalCycles(start: Date, end: Date, interval: 'weekly' | 'monthly'): number {
+  const diff = end.getTime() - start.getTime();
+  const dayTime = 24 * 60 * 60 * 1000;
+  const weekTime = 7 * dayTime;
+  const monthTime = 30 * dayTime;
+
+  const cycles = interval === 'weekly' ? Math.floor(diff / weekTime) : Math.floor(diff / monthTime);
+  return cycles;
+}

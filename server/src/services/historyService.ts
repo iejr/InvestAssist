@@ -23,7 +23,7 @@ export async function getHistory(strategyId: string) {
     const priceEntry = prices.find(p => p[0] === date.toISOString().slice(0, 10));
     const price = priceEntry ? parseFloat(priceEntry[1]) : 0;
 
-    const actualValue = holdings[idx] * price;
+    const actualValue = holdings[idx][0] * price;
 
     if (initialExpectValue == -1) {
       initialExpectValue = actualValue;
