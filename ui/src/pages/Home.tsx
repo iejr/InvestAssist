@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom';
 import axios from 'axios';
 
 interface Strategy {
-  strategy_id: string;
+  id: string;
   name: string;
   start_date: string;
   interval: string;
@@ -120,13 +120,13 @@ export default function Home() {
 
       <ul className="space-y-4">
         {strategies.map(s => (
-          <li key={s.strategy_id} className="border p-4 rounded shadow bg-white">
+          <li key={s.id} className="border p-4 rounded shadow bg-white">
             <h2 className="text-lg font-semibold">{s.name}</h2>
             <p>
-              Start: {s.start_date} | Interval: {s.interval} | Increment: ${s.increment}
+              Start: {new Date(s.start_date).toLocaleDateString()} | Interval: {s.interval} | Increment: ${s.increment}
             </p>
             <Link
-              to={`/strategy/${s.strategy_id}`}
+              to={`/strategy/${s.id}`}
               className="text-blue-500 hover:underline"
             >
               View Details →
