@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"strconv"
 	"strings"
@@ -86,8 +87,16 @@ func (b *BinanceWS) Stream(ctx context.Context, symbols []string) (<-chan PriceE
 // runOnce holds a single websocket connection open, forwarding trade events to
 // out until the connection fails or ctx is cancelled.
 func (b *BinanceWS) runOnce(ctx context.Context, url string, out chan<- PriceEvent) error {
-	conn, _, err := websocket.DefaultDialer.DialContext(ctx, url, nil)
+	conn, resp, err := websocket.DefaultDialer.DialContext(ctx, url, nil)
 	if err != nil {
+		// On a failed upgrade gorilla still returns the HTTP response; surface
+		// its status and a snippet of the body so geo-blocks (451), rate limits
+		// (429), and endpoint issues are diagnosable instead of "bad handshake".
+		if resp != nil {
+			body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+			resp.Body.Close()
+			return fmt.Errorf("dial: %w (http %d: %s)", err, resp.StatusCode, strings.TrimSpace(string(body)))
+		}
 		return fmt.Errorf("dial: %w", err)
 	}
 	defer conn.Close()
