@@ -39,10 +39,14 @@ type binanceCombinedMsg struct {
 // are decoded.
 type binanceTradeMsg struct {
 	Event     string `json:"e"` // "trade"
+	EventTime int64  `json:"E"` // ms since epoch. Declared so Go's case-insensitive
+	// JSON matching doesn't collide the numeric "E" key with the string "e" field.
 	Symbol    string `json:"s"` // "BTCUSDT"
+	TradeID   int64  `json:"t"` // trade id. Declared so the numeric "t" key gets an
+	// exact match instead of colliding case-insensitively with "T" below.
 	Price     string `json:"p"` // decimal string
 	Quantity  string `json:"q"` // decimal string
-	TradeTime int64  `json:"T"` // ms since epoch
+	TradeTime int64  `json:"T"` // ms since epoch (trade time)
 }
 
 func (b *BinanceWS) Stream(ctx context.Context, symbols []string) (<-chan PriceEvent, error) {
