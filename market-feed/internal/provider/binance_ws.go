@@ -66,9 +66,21 @@ func (b *BinanceWS) Stream(ctx context.Context, symbols []string) (<-chan PriceE
 		defer close(out)
 		backoff := time.Second
 		const maxBackoff = 30 * time.Second
+		const stableThreshold = 2 * time.Minute
 
 		for ctx.Err() == nil {
-			if err := b.runOnce(ctx, url, out); err != nil && ctx.Err() == nil {
+			start := time.Now()
+			err := b.runOnce(ctx, url, out)
+			if ctx.Err() != nil {
+				return
+			}
+			// A connection that stayed healthy for a while means the endpoint
+			// is fine; treat the drop as isolated and reset backoff so we
+			// reconnect promptly instead of at a stale (possibly maxed) delay.
+			if time.Since(start) > stableThreshold {
+				backoff = time.Second
+			}
+			if err != nil {
 				log.Printf("binance ws: connection error: %v; reconnecting in %s", err, backoff)
 				select {
 				case <-ctx.Done():
@@ -80,7 +92,6 @@ func (b *BinanceWS) Stream(ctx context.Context, symbols []string) (<-chan PriceE
 				}
 				continue
 			}
-			// Clean disconnect without ctx cancel: reset backoff and retry.
 			backoff = time.Second
 		}
 	}()
@@ -113,13 +124,34 @@ func (b *BinanceWS) runOnce(ctx context.Context, url string, out chan<- PriceEve
 		_ = conn.Close()
 	}()
 
-	// Binance sends a ping every ~3 min and expects a pong; gorilla replies to
-	// pings automatically. We also bound reads so a dead peer is detected.
-	conn.SetReadDeadline(time.Now().Add(10 * time.Minute))
-	conn.SetPongHandler(func(string) error {
-		conn.SetReadDeadline(time.Now().Add(10 * time.Minute))
-		return nil
+	// Detect a dead peer: require some frame (data, ping, or pong) within the
+	// read window. Binance pings us periodically and also sends trades often,
+	// so any healthy connection refreshes this deadline continuously.
+	const readWait = 3 * time.Minute
+	resetDeadline := func() { _ = conn.SetReadDeadline(time.Now().Add(readWait)) }
+	resetDeadline()
+	// gorilla auto-replies to pings; we just refresh the deadline on each.
+	conn.SetPingHandler(func(appData string) error {
+		resetDeadline()
+		return conn.WriteControl(websocket.PongMessage, []byte(appData), time.Now().Add(10*time.Second))
 	})
+	conn.SetPongHandler(func(string) error { resetDeadline(); return nil })
+
+	// Proactively ping so we notice a silently dropped connection quickly.
+	pinger := time.NewTicker(readWait / 3)
+	defer pinger.Stop()
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-pinger.C:
+				if err := conn.WriteControl(websocket.PingMessage, nil, time.Now().Add(10*time.Second)); err != nil {
+					return
+				}
+			}
+		}
+	}()
 
 	for {
 		_, raw, err := conn.ReadMessage()
@@ -129,6 +161,8 @@ func (b *BinanceWS) runOnce(ctx context.Context, url string, out chan<- PriceEve
 			}
 			return fmt.Errorf("read: %w", err)
 		}
+		// Any inbound frame proves the connection is alive.
+		resetDeadline()
 
 		var msg binanceCombinedMsg
 		if err := json.Unmarshal(raw, &msg); err != nil {
