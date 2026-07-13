@@ -10,8 +10,14 @@ import (
 // Everything is sourced from environment variables so the service can share
 // the same Postgres instance as server-go without extra wiring.
 type Config struct {
-	// DatabaseURL is the shared Postgres DSN (same DB as server-go).
+	// DatabaseURL is the shared Postgres DSN (same DB as server-go). Holds
+	// latest_prices, and price_candles too unless HistoryDatabaseURL is set.
 	DatabaseURL string
+
+	// HistoryDatabaseURL, when non-empty, routes append-only history
+	// (price_candles) to a separate Postgres instance. Empty means history
+	// lives alongside latest_prices in DatabaseURL.
+	HistoryDatabaseURL string
 
 	// Symbols are the Binance symbols to stream, in Binance's own notation
 	// (e.g. "BTCUSDT"). We start with BTC/USDT only.
@@ -28,10 +34,11 @@ type Config struct {
 // for local development.
 func Load() Config {
 	return Config{
-		DatabaseURL:    envOr("DATABASE_URL", "host=localhost user=postgres password=postgres dbname=invest_assist port=5432 sslmode=disable"),
-		Symbols:        csvOr("MF_SYMBOLS", []string{"BTCUSDT"}),
-		SampleInterval: durationOr("MF_SAMPLE_INTERVAL", time.Minute),
-		BinanceWSBase:  envOr("MF_BINANCE_WS", "wss://stream.binance.com:9443"),
+		DatabaseURL:        envOr("DATABASE_URL", "host=localhost user=postgres password=postgres dbname=invest_assist port=5432 sslmode=disable"),
+		HistoryDatabaseURL: strings.TrimSpace(os.Getenv("MF_HISTORY_DATABASE_URL")),
+		Symbols:            csvOr("MF_SYMBOLS", []string{"BTCUSDT"}),
+		SampleInterval:     durationOr("MF_SAMPLE_INTERVAL", time.Minute),
+		BinanceWSBase:      envOr("MF_BINANCE_WS", "wss://stream.binance.com:9443"),
 	}
 }
 

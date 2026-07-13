@@ -18,7 +18,7 @@ import (
 func main() {
 	cfg := config.Load()
 
-	gdb, err := db.Open(cfg.DatabaseURL)
+	conns, err := db.Open(cfg.DatabaseURL, cfg.HistoryDatabaseURL)
 	if err != nil {
 		log.Fatalf("db: %v", err)
 	}
@@ -38,8 +38,8 @@ func main() {
 	latestCh := b.Subscribe(1024)
 	sampleCh := b.Subscribe(1024)
 
-	latestRepo := repository.NewLatestRepo(gdb)
-	candleRepo := repository.NewCandleRepo(gdb)
+	latestRepo := repository.NewLatestRepo(conns.Primary)
+	candleRepo := repository.NewCandleRepo(conns.History)
 	smp := sampler.New(cfg.SampleInterval, candleRepo)
 
 	// Latest-price writer.

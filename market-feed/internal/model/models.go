@@ -51,6 +51,9 @@ type PriceCandle struct {
 	Close    float64  `json:"close"`
 	Volume   float64  `gorm:"default:0" json:"volume"`
 	Source   Source   `gorm:"type:text;uniqueIndex:uq_candle,priority:5" json:"source"`
+	// CreatedAt records when this row was written (append-only, never updated).
+	// Distinct from OpenTime (market time); useful for tracing ingestion issues.
+	CreatedAt time.Time `json:"created_at"`
 }
 
 func (PriceCandle) TableName() string { return "price_candles" }
