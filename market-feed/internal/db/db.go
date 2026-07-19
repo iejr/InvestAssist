@@ -3,12 +3,26 @@ package db
 import (
 	"fmt"
 	"log"
+	"os"
+	"time"
 
 	"market-feed/internal/model"
 
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
+)
+
+// gormLogger raises the slow-SQL threshold to 1s so expected remote-DB latency
+// (e.g. history on a separate instance) doesn't spam warnings, while genuinely
+// pathological queries still surface.
+var gormLogger = logger.New(
+	log.New(os.Stdout, "\r\n", log.LstdFlags),
+	logger.Config{
+		SlowThreshold: time.Second,
+		LogLevel:      logger.Warn,
+		Colorful:      true,
+	},
 )
 
 // Conns holds the database handles used by the service. Primary always holds
@@ -56,6 +70,6 @@ func Open(primaryDSN, historyDSN string) (*Conns, error) {
 
 func connect(dsn string) (*gorm.DB, error) {
 	return gorm.Open(postgres.Open(dsn), &gorm.Config{
-		Logger: logger.Default.LogMode(logger.Warn),
+		Logger: gormLogger,
 	})
 }
