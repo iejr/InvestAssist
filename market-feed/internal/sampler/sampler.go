@@ -7,8 +7,14 @@ import (
 
 	"market-feed/internal/model"
 	"market-feed/internal/provider"
-	"market-feed/internal/repository"
 )
+
+// candleWriter is the storage seam for finished candles. The real
+// repository.CandleRepo satisfies it; tests inject a fake to assert OHLC math
+// without a database.
+type candleWriter interface {
+	Insert(model.PriceCandle) error
+}
 
 // Sampler aggregates incoming PriceEvents into fixed-interval OHLC candles and
 // appends them to storage. Incoming frequency and storage frequency are
@@ -16,7 +22,7 @@ import (
 type Sampler struct {
 	interval time.Duration
 	label    model.Interval
-	repo     *repository.CandleRepo
+	repo     candleWriter
 }
 
 // bucket accumulates the OHLC for one (edge, open_time) window.
@@ -34,7 +40,7 @@ type bucket struct {
 // New creates a Sampler that flushes one candle per interval. The interval is
 // mapped to a stored label (e.g. 1m); unknown intervals still store using the
 // closest canonical label.
-func New(interval time.Duration, repo *repository.CandleRepo) *Sampler {
+func New(interval time.Duration, repo candleWriter) *Sampler {
 	return &Sampler{
 		interval: interval,
 		label:    labelFor(interval),
