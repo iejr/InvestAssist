@@ -28,6 +28,9 @@ type Config struct {
 
 	// BinanceWSBase is the Binance combined-stream websocket base URL.
 	BinanceWSBase string
+
+	// BinanceRESTBase is the Binance REST base URL, used for klines backfill.
+	BinanceRESTBase string
 }
 
 // Load reads configuration from the environment, applying sensible defaults
@@ -39,6 +42,7 @@ func Load() Config {
 		Symbols:            csvOr("MF_SYMBOLS", []string{"BTCUSDT"}),
 		SampleInterval:     durationOr("MF_SAMPLE_INTERVAL", time.Minute),
 		BinanceWSBase:      envOr("MF_BINANCE_WS", "wss://stream.binance.com:9443"),
+		BinanceRESTBase:    envOr("MF_BINANCE_REST", "https://api.binance.com"),
 	}
 }
 
