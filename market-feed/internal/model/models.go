@@ -20,7 +20,8 @@ const (
 type Source string
 
 const (
-	SourceBinance Source = "binance"
+	SourceBinance  Source = "binance"
+	SourceCoinbase Source = "coinbase"
 )
 
 // LatestPrice is the newest observed value for a (base, quote) edge. One row

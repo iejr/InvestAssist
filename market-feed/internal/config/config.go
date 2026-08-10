@@ -31,6 +31,18 @@ type Config struct {
 
 	// BinanceRESTBase is the Binance REST base URL, used for klines backfill.
 	BinanceRESTBase string
+
+	// CoinbaseRESTBase is the Coinbase Exchange REST base URL, used to observe
+	// stablecoin->USD bridge rates (e.g. USDT/USD, USDC/USD).
+	CoinbaseRESTBase string
+
+	// Bridges are the stablecoin->USD edges to poll from Coinbase, each in
+	// "BASE:QUOTE" form (e.g. "USDT:USD"). These never assume a 1:1 peg.
+	Bridges []string
+
+	// BridgeInterval is how often the bridge poller samples Coinbase. Stablecoin
+	// rates barely move, so a daily cadence is plenty for portfolio valuation.
+	BridgeInterval time.Duration
 }
 
 // Load reads configuration from the environment, applying sensible defaults
@@ -43,6 +55,9 @@ func Load() Config {
 		SampleInterval:     durationOr("MF_SAMPLE_INTERVAL", time.Minute),
 		BinanceWSBase:      envOr("MF_BINANCE_WS", "wss://stream.binance.com:9443"),
 		BinanceRESTBase:    envOr("MF_BINANCE_REST", "https://api.binance.com"),
+		CoinbaseRESTBase:   envOr("MF_COINBASE_REST", "https://api.exchange.coinbase.com"),
+		Bridges:            csvOr("MF_BRIDGES", []string{"USDT:USD", "USDC:USD"}),
+		BridgeInterval:     durationOr("MF_BRIDGE_INTERVAL", 24*time.Hour),
 	}
 }
 
