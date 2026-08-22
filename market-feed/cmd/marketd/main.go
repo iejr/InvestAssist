@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"market-feed/internal/backfill"
+	"market-feed/internal/bridge"
 	"market-feed/internal/bus"
 	"market-feed/internal/config"
 	"market-feed/internal/db"
@@ -114,6 +115,12 @@ func runStream(cfg config.Config, conns *db.Conns) {
 
 	// OHLC sampler.
 	go smp.Run(ctx, sampleCh)
+
+	// Stablecoin->USD bridge poller (Kraken). Self-clocked, independent of the
+	// Binance bus/sampler: latest rows to Primary, daily-close candles to History.
+	kraken := provider.NewKrakenREST(cfg.KrakenRESTBase)
+	bridgePoller := bridge.New(kraken, latestRepo, candleRepo, bridge.ParseEdges(cfg.Bridges), cfg.BridgeInterval)
+	go bridgePoller.Run(ctx)
 
 	log.Printf("market-feed: streaming %v, sampling every %s", cfg.Symbols, cfg.SampleInterval)
 
