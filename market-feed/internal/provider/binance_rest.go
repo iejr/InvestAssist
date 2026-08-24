@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"market-feed/internal/model"
-	"market-feed/internal/normalize"
 )
 
 // klinesLimit is the max candles Binance returns per klines request.
@@ -54,21 +53,19 @@ func binanceInterval(iv model.Interval) (string, error) {
 	}
 }
 
-// Klines fetches candles for [start, end) for one symbol at one interval,
-// paginating until the range is covered. The symbol is Binance notation
-// (e.g. "BTCUSDT"); returned candles are normalized to base/quote.
+// FetchOHLC fetches candles for [start, end) for one (base, quote) edge at one
+// interval, paginating until the range is covered. base/quote are canonical
+// (e.g. "BTC","USDT"); the Binance native symbol is derived internally and the
+// returned candles are tagged with the given base/quote.
 //
 // end is treated as exclusive and callers should pass the last *closed*
 // interval boundary so an in-progress candle is never fetched.
-func (r *BinanceREST) Klines(ctx context.Context, symbol string, iv model.Interval, start, end time.Time) ([]model.PriceCandle, error) {
+func (r *BinanceREST) FetchOHLC(ctx context.Context, base, quote string, iv model.Interval, start, end time.Time) ([]model.PriceCandle, error) {
 	bIv, err := binanceInterval(iv)
 	if err != nil {
 		return nil, err
 	}
-	base, quote, ok := normalize.Symbol(symbol)
-	if !ok {
-		return nil, fmt.Errorf("unrecognized symbol %q", symbol)
-	}
+	symbol := strings.ToUpper(base + quote) // Binance native notation, e.g. BTCUSDT
 
 	var out []model.PriceCandle
 	cursor := start.UnixMilli()
