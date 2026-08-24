@@ -15,6 +15,7 @@ import (
 	"market-feed/internal/config"
 	"market-feed/internal/db"
 	"market-feed/internal/model"
+	"market-feed/internal/normalize"
 	"market-feed/internal/provider"
 	"market-feed/internal/repository"
 	"market-feed/internal/sampler"
@@ -59,6 +60,10 @@ func runBackfill(cfg config.Config, conns *db.Conns, bf backfillFlags) {
 	if bf.symbol == "" || bf.from == "" {
 		log.Fatal("backfill: -symbol and -from are required")
 	}
+	base, quote, ok := normalize.Symbol(bf.symbol)
+	if !ok {
+		log.Fatalf("backfill: unrecognized -symbol %q", bf.symbol)
+	}
 	start, err := parseTime(bf.from)
 	if err != nil {
 		log.Fatalf("backfill: bad -from: %v", err)
@@ -77,7 +82,7 @@ func runBackfill(cfg config.Config, conns *db.Conns, bf backfillFlags) {
 	repo := repository.NewCandleRepo(conns.History)
 	bfr := backfill.New(rest, repo)
 
-	if err := bfr.Run(ctx, bf.symbol, model.Interval(bf.interval), start, end, bf.override); err != nil {
+	if err := bfr.Run(ctx, base, quote, model.Interval(bf.interval), start, end, bf.override); err != nil {
 		log.Fatalf("backfill: %v", err)
 	}
 	log.Println("backfill: done")
