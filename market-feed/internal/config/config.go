@@ -33,17 +33,12 @@ type Config struct {
 	BinanceRESTBase string
 
 	// KrakenRESTBase is the Kraken REST base URL, used to observe stablecoin->USD
-	// bridge rates (USDT/USD, USDC/USD). Kraken hosts real USD markets for both,
-	// and will later also serve XMR OHLC.
+	// bridge rates (USDT/USD, USDC/USD) and, later, XMR OHLC.
 	KrakenRESTBase string
 
-	// Bridges are the stablecoin->USD edges to poll from Kraken, each in
-	// "BASE:QUOTE" form (e.g. "USDT:USD"). These never assume a 1:1 peg.
-	Bridges []string
-
-	// BridgeInterval is how often the bridge poller samples Kraken. Stablecoin
-	// rates barely move, so a daily cadence is plenty for portfolio valuation.
-	BridgeInterval time.Duration
+	// JobsFile is the path to the YAML job list (L4). When empty or missing, a
+	// built-in default is used so local development runs with zero config.
+	JobsFile string
 }
 
 // Load reads configuration from the environment, applying sensible defaults
@@ -57,8 +52,7 @@ func Load() Config {
 		BinanceWSBase:      envOr("MF_BINANCE_WS", "wss://stream.binance.com:9443"),
 		BinanceRESTBase:    envOr("MF_BINANCE_REST", "https://api.binance.com"),
 		KrakenRESTBase:     envOr("MF_KRAKEN_REST", "https://api.kraken.com"),
-		Bridges:            csvOr("MF_BRIDGES", []string{"USDT:USD", "USDC:USD"}),
-		BridgeInterval:     durationOr("MF_BRIDGE_INTERVAL", 24*time.Hour),
+		JobsFile:           strings.TrimSpace(os.Getenv("MF_JOBS_FILE")),
 	}
 }
 
