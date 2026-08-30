@@ -23,8 +23,16 @@ type Config struct {
 	// (e.g. "BTCUSDT"). We start with BTC/USDT only.
 	Symbols []string
 
-	// SampleInterval is the OHLC bucket size for the historical sampler.
-	SampleInterval time.Duration
+	// SampleIntervals are the OHLC bucket sizes the stream samplers emit. One
+	// sampler runs per interval off the same bus (e.g. 1m and 5m), so a single
+	// connection yields multiple candle resolutions.
+	SampleIntervals []time.Duration
+
+	// LatestCoalesce bounds how often latest_prices is written per edge: at most
+	// one write per window, keeping only the newest value. 0 disables coalescing
+	// (write every event). Stream ticks can arrive many times per second; a small
+	// window keeps Postgres from being hammered without meaningfully staleness.
+	LatestCoalesce time.Duration
 
 	// BinanceWSBase is the Binance combined-stream websocket base URL.
 	BinanceWSBase string
@@ -48,7 +56,8 @@ func Load() Config {
 		DatabaseURL:        envOr("DATABASE_URL", "host=localhost user=postgres password=postgres dbname=invest_assist port=5432 sslmode=disable"),
 		HistoryDatabaseURL: strings.TrimSpace(os.Getenv("MF_HISTORY_DATABASE_URL")),
 		Symbols:            csvOr("MF_SYMBOLS", []string{"BTCUSDT"}),
-		SampleInterval:     durationOr("MF_SAMPLE_INTERVAL", time.Minute),
+		SampleIntervals:    durationsOr("MF_SAMPLE_INTERVALS", []time.Duration{time.Minute}),
+		LatestCoalesce:     durationOr("MF_LATEST_COALESCE", time.Second),
 		BinanceWSBase:      envOr("MF_BINANCE_WS", "wss://stream.binance.com:9443"),
 		BinanceRESTBase:    envOr("MF_BINANCE_REST", "https://api.binance.com"),
 		KrakenRESTBase:     envOr("MF_KRAKEN_REST", "https://api.kraken.com"),
@@ -91,4 +100,26 @@ func durationOr(key string, def time.Duration) time.Duration {
 		return def
 	}
 	return d
+}
+
+// durationsOr parses a comma-separated list of Go durations, ignoring blanks
+// and unparseable entries. If nothing valid remains, the default is returned.
+func durationsOr(key string, def []time.Duration) []time.Duration {
+	v := strings.TrimSpace(os.Getenv(key))
+	if v == "" {
+		return def
+	}
+	var out []time.Duration
+	for _, p := range strings.Split(v, ",") {
+		if p = strings.TrimSpace(p); p == "" {
+			continue
+		}
+		if d, err := time.ParseDuration(p); err == nil && d > 0 {
+			out = append(out, d)
+		}
+	}
+	if len(out) == 0 {
+		return def
+	}
+	return out
 }

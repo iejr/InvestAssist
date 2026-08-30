@@ -7,35 +7,32 @@ import (
 
 	"market-feed/internal/bus"
 	"market-feed/internal/provider"
-	"market-feed/internal/sampler"
 )
 
-// latestWriter upserts the newest value for an edge (satisfied by LatestRepo).
-type latestWriter interface {
-	Upsert(ev provider.PriceEvent) error
-}
-
 // StreamRunner runs one streaming job: a single provider connection carrying N
-// symbols, fanned out over a bus to (1) the latest-price writer and (2) the
-// OHLC sampler. One connection, one bus, one latest-writer, one sampler per
-// job — adding symbols does not add goroutines-per-symbol.
+// symbols, published to a bus and fanned out to the shared sinks (coalesced
+// latest-writer + one sampler per interval). One connection, one bus, one
+// latest-writer, N samplers per job — adding symbols does not add
+// goroutines-per-symbol.
 type StreamRunner struct {
-	src            provider.Streamer
-	symbols        []string
-	latest         latestWriter
-	sampler        *sampler.Sampler
-	sampleInterval time.Duration
+	src       provider.Streamer
+	symbols   []string
+	latest    latestWriter
+	candles   candleWriter
+	intervals []time.Duration
+	coalesce  time.Duration
 }
 
-// NewStreamRunner builds a stream runner. sampleInterval sets the sampler's OHLC
-// bucket size; candles are written through candleWriter (a *repository.CandleRepo).
-func NewStreamRunner(src provider.Streamer, symbols []string, latest latestWriter, smp *sampler.Sampler, sampleInterval time.Duration) *StreamRunner {
+// NewStreamRunner builds a stream runner. intervals are the sampler bucket sizes
+// (one sampler each); coalesce bounds latest_prices write frequency per edge.
+func NewStreamRunner(src provider.Streamer, symbols []string, latest latestWriter, candles candleWriter, intervals []time.Duration, coalesce time.Duration) *StreamRunner {
 	return &StreamRunner{
-		src:            src,
-		symbols:        symbols,
-		latest:         latest,
-		sampler:        smp,
-		sampleInterval: sampleInterval,
+		src:       src,
+		symbols:   symbols,
+		latest:    latest,
+		candles:   candles,
+		intervals: intervals,
+		coalesce:  coalesce,
 	}
 }
 
@@ -48,22 +45,9 @@ func (r *StreamRunner) Run(ctx context.Context) error {
 	}
 
 	b := bus.New()
-	latestCh := b.Subscribe(1024)
-	sampleCh := b.Subscribe(1024)
+	startSinks(ctx, b, r.latest, r.candles, r.intervals, r.coalesce)
 
-	// Latest-price writer.
-	go func() {
-		for ev := range latestCh {
-			if err := r.latest.Upsert(ev); err != nil {
-				log.Printf("latest: upsert %s/%s: %v", ev.Base, ev.Quote, err)
-			}
-		}
-	}()
-
-	// OHLC sampler.
-	go r.sampler.Run(ctx, sampleCh)
-
-	log.Printf("stream: %v, sampling every %s", r.symbols, r.sampleInterval)
+	log.Printf("stream: %v, sampling %v (latest coalesce %s)", r.symbols, r.intervals, r.coalesce)
 
 	// Pump provider events into the bus until the stream closes (ctx cancelled).
 	for ev := range events {

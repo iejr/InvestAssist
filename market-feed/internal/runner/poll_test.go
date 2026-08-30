@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"market-feed/internal/model"
-	"market-feed/internal/provider"
 )
 
 type fakeTicker struct {
@@ -22,28 +21,15 @@ func (f *fakeTicker) Ticker(ctx context.Context, base, quote string) (float64, t
 	return f.price, f.ts, f.err
 }
 
-type fakeLatest struct {
-	events []provider.PriceEvent
-}
-
-func (f *fakeLatest) Upsert(ev provider.PriceEvent) error {
-	f.events = append(f.events, ev)
-	return nil
-}
-
-func TestPollObserve_WritesLatest(t *testing.T) {
+func TestPollFetch_BuildsEvent(t *testing.T) {
 	ts := time.Date(2026, 8, 20, 12, 0, 0, 0, time.UTC)
 	src := &fakeTicker{price: 0.9997, ts: ts}
-	latest := &fakeLatest{}
-	r := NewPollRunner(src, latest, "USDT", "USD", model.SourceKraken, time.Hour)
+	r := NewPollRunner(src, nil, nil, "USDT", "USD", model.SourceKraken, time.Hour)
 
-	if err := r.observe(context.Background()); err != nil {
-		t.Fatalf("observe: %v", err)
+	ev, ok := r.fetch(context.Background())
+	if !ok {
+		t.Fatal("fetch should succeed")
 	}
-	if len(latest.events) != 1 {
-		t.Fatalf("got %d latest writes, want 1", len(latest.events))
-	}
-	ev := latest.events[0]
 	if ev.Base != "USDT" || ev.Quote != "USD" || ev.Price != 0.9997 {
 		t.Errorf("unexpected event: %+v", ev)
 	}
@@ -52,15 +38,11 @@ func TestPollObserve_WritesLatest(t *testing.T) {
 	}
 }
 
-func TestPollObserve_SourceErrorSkipsWrite(t *testing.T) {
+func TestPollFetch_SourceErrorSkips(t *testing.T) {
 	src := &fakeTicker{err: errors.New("boom")}
-	latest := &fakeLatest{}
-	r := NewPollRunner(src, latest, "USDT", "USD", model.SourceKraken, time.Hour)
+	r := NewPollRunner(src, nil, nil, "USDT", "USD", model.SourceKraken, time.Hour)
 
-	if err := r.observe(context.Background()); err == nil {
-		t.Fatal("expected error from failing source")
-	}
-	if len(latest.events) != 0 {
-		t.Errorf("no latest write expected on source error, got %d", len(latest.events))
+	if _, ok := r.fetch(context.Background()); ok {
+		t.Fatal("fetch should report failure on source error")
 	}
 }
