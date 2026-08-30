@@ -1,0 +1,40 @@
+# market-feed job list (L4). Point MF_JOBS_FILE at a copy of this file.
+#
+# Each job names a provider and a symbol (native notation). The runner validates
+# each job against its provider's capabilities at startup: stream needs a
+# streaming provider, poll a ticker provider, backfill an OHLC provider.
+#
+# Poll and backfill are separate jobs even for the same edge: poll keeps
+# latest_prices fresh (spot), backfill writes real OHLC candles. They share
+# driver code but run on independent schedules.
+jobs:
+  # Live crypto: one Binance WS connection carrying all listed symbols.
+  - kind: stream
+    provider: binance
+    symbols: [BTCUSDT]
+
+  # Stablecoin -> USD bridge, from Kraken (never assumed 1:1).
+  # Latest spot, refreshed daily.
+  - kind: poll
+    provider: kraken
+    symbol: USDTUSD
+    every: 24h
+  - kind: poll
+    provider: kraken
+    symbol: USDCUSD
+    every: 24h
+
+  # Real 1d OHLC candles for the same edges. Cadence is external (cron ->
+  # `marketd -backfill`); lookback bounds how far back each run refreshes.
+  - kind: backfill
+    provider: kraken
+    symbol: USDTUSD
+    interval: 1d
+    lookback: 720h
+    override: true
+  - kind: backfill
+    provider: kraken
+    symbol: USDCUSD
+    interval: 1d
+    lookback: 720h
+    override: true
