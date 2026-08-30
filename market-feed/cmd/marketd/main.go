@@ -18,7 +18,6 @@ import (
 	"market-feed/internal/normalize"
 	"market-feed/internal/repository"
 	"market-feed/internal/runner"
-	"market-feed/internal/sampler"
 )
 
 // backfillFlags collects the -backfill CLI options for an ad-hoc, one-off run.
@@ -93,8 +92,7 @@ func runServe(cfg config.Config, conns *db.Conns) {
 		if err != nil {
 			log.Fatalf("job: stream %v: %v", spec.Symbols, err)
 		}
-		smp := sampler.New(cfg.SampleInterval, candleRepo)
-		sr := runner.NewStreamRunner(s, spec.Symbols, latestRepo, smp, cfg.SampleInterval)
+		sr := runner.NewStreamRunner(s, spec.Symbols, latestRepo, candleRepo, cfg.SampleIntervals, cfg.LatestCoalesce)
 		wg.Add(1)
 		started++
 		go func() {
@@ -119,7 +117,7 @@ func runServe(cfg config.Config, conns *db.Conns) {
 		if err != nil {
 			log.Fatalf("job: poll %s: %v", spec.Symbol, err)
 		}
-		pr := runner.NewPollRunner(tf, latestRepo, base, quote, runner.SourceFor(spec.Provider), every)
+		pr := runner.NewPollRunner(tf, latestRepo, candleRepo, base, quote, runner.SourceFor(spec.Provider), every)
 		wg.Add(1)
 		started++
 		go func() {
