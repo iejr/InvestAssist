@@ -3,9 +3,11 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"log"
 	"os"
 	"os/signal"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -20,9 +22,12 @@ import (
 	"market-feed/internal/runner"
 )
 
-// backfillFlags collects the -backfill CLI options for an ad-hoc, one-off run.
-// When -symbol is omitted, -backfill instead runs the backfill jobs from the
-// jobs file (the path an external cron would take for the daily refresh).
+// backfillFlags collects the -backfill CLI options. They apply uniformly to
+// both backfill modes — a single ad-hoc -symbol run, and running the backfill
+// jobs from the jobs file (the path an external cron takes for the daily
+// refresh). Any flag explicitly passed overrides the corresponding YAML value;
+// `set` records which flags were given so an unset flag's default never
+// clobbers a job's configured value (see resolveBackfill).
 type backfillFlags struct {
 	enabled  bool
 	provider string
@@ -30,19 +35,28 @@ type backfillFlags struct {
 	interval string
 	from     string
 	to       string
+	lookback time.Duration
 	override bool
+	set      map[string]bool // names of flags explicitly passed on the CLI
 }
 
 func main() {
 	var bf backfillFlags
 	flag.BoolVar(&bf.enabled, "backfill", false, "run backfill then exit (jobs file, or a single -symbol)")
-	flag.StringVar(&bf.provider, "provider", "binance", "backfill: provider for an ad-hoc -symbol run")
+	flag.StringVar(&bf.provider, "provider", "binance", "backfill: provider (ad-hoc default; overrides a job's provider when set)")
 	flag.StringVar(&bf.symbol, "symbol", "", "backfill: ad-hoc native symbol (e.g. BTCUSDT); omit to run backfill jobs from the jobs file")
-	flag.StringVar(&bf.interval, "interval", "1m", "backfill: candle interval (1m,5m,1h,1d)")
-	flag.StringVar(&bf.from, "from", "", "backfill: start time, RFC3339 or YYYY-MM-DD (UTC)")
-	flag.StringVar(&bf.to, "to", "", "backfill: end time, RFC3339 or YYYY-MM-DD (UTC); default now")
-	flag.BoolVar(&bf.override, "override", true, "backfill: overwrite existing candles (false = fill gaps only)")
+	flag.StringVar(&bf.interval, "interval", "1m", "backfill: candle interval (1s,5s,1m,5m,1h,1d); overrides a job's interval when set")
+	flag.StringVar(&bf.from, "from", "", "backfill: start time, RFC3339 or YYYY-MM-DD (UTC); overrides the window in both modes")
+	flag.StringVar(&bf.to, "to", "", "backfill: end time, RFC3339 or YYYY-MM-DD (UTC); default now; overrides the window in both modes")
+	flag.DurationVar(&bf.lookback, "lookback", 0, "backfill: window length back from -to/now (e.g. 720h); overrides a job's lookback when set")
+	flag.BoolVar(&bf.override, "override", true, "backfill: overwrite existing candles (false = fill gaps only); overrides a job's override when set")
 	flag.Parse()
+
+	// Record which flags were explicitly given so precedence can distinguish an
+	// intentional value from a flag's zero-value default (e.g. -provider defaults
+	// to "binance", but in jobs mode a Kraken job must keep its own provider).
+	bf.set = map[string]bool{}
+	flag.Visit(func(f *flag.Flag) { bf.set[f.Name] = true })
 
 	cfg := config.Load()
 
@@ -137,9 +151,10 @@ func runServe(cfg config.Config, conns *db.Conns) {
 	log.Println("market-feed: shutdown complete")
 }
 
-// runBackfill runs backfill then exits. With -symbol it does a single ad-hoc
-// range; without it, it runs every backfill job from the jobs file over each
-// job's rolling lookback window.
+// runBackfill runs backfill then exits. Both modes share one path: seed a list
+// of job specs (a single synthetic spec from CLI flags when -symbol is given,
+// otherwise the backfill jobs from the jobs file), resolve each into a concrete
+// window+params, and run them through the same loop.
 func runBackfill(cfg config.Config, conns *db.Conns, bf backfillFlags) {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -148,65 +163,132 @@ func runBackfill(cfg config.Config, conns *db.Conns, bf backfillFlags) {
 	candleRepo := repository.NewCandleRepo(conns.History)
 	now := time.Now().UTC()
 
-	if bf.symbol != "" {
-		runAdHocBackfill(ctx, provs, candleRepo, bf, now)
-		return
-	}
-
-	specs := loadJobs(cfg).Filter(jobs.KindBackfill)
+	specs := seedBackfillSpecs(cfg, bf)
 	if len(specs) == 0 {
 		log.Println("backfill: no backfill jobs configured")
 		return
 	}
+
+	ran := 0
 	for _, spec := range specs {
-		base, quote, ok := normalize.Symbol(spec.Symbol)
-		if !ok {
-			log.Printf("backfill: skip %q: unrecognized symbol", spec.Symbol)
-			continue
-		}
-		fetcher, err := provs.OHLCFetcher(spec.Provider)
+		task, err := resolveBackfill(spec, bf, now)
 		if err != nil {
-			log.Printf("backfill: skip %s: %v", spec.Symbol, err)
+			log.Printf("backfill: skip %q: %v", spec.Symbol, err)
 			continue
 		}
-		iv, _ := spec.CandleInterval()      // validated on load
-		lookback, _ := spec.LookbackDuration() // validated on load
-		rr := runner.NewBackfillRunner(backfill.New(fetcher, candleRepo), base, quote, iv, lookback, spec.OverrideOrDefault())
-		if err := rr.Run(ctx, now); err != nil {
-			log.Printf("backfill %s/%s: %v", base, quote, err)
+		fetcher, err := provs.OHLCFetcher(task.provider)
+		if err != nil {
+			log.Printf("backfill: skip %s/%s: %v", task.base, task.quote, err)
+			continue
 		}
+		rr := runner.NewBackfillRunner(backfill.New(fetcher, candleRepo), task.base, task.quote, task.iv, task.start, task.end, task.override)
+		if err := rr.Run(ctx); err != nil {
+			log.Printf("backfill %s/%s: %v", task.base, task.quote, err)
+			continue
+		}
+		ran++
 	}
-	log.Println("backfill: done")
+	log.Printf("backfill: done (%d/%d)", ran, len(specs))
 }
 
-// runAdHocBackfill handles the single-symbol CLI path.
-func runAdHocBackfill(ctx context.Context, provs *runner.Providers, candleRepo *repository.CandleRepo, bf backfillFlags, now time.Time) {
-	if bf.from == "" {
-		log.Fatal("backfill: -from is required with -symbol")
+// seedBackfillSpecs produces the specs to run: one synthetic spec built from the
+// CLI flags when -symbol is set (ad-hoc mode), otherwise the backfill jobs from
+// the jobs file. The synthetic spec carries the raw flag values; resolveBackfill
+// applies the same overlay to it as to a YAML job, so the two modes converge.
+func seedBackfillSpecs(cfg config.Config, bf backfillFlags) []jobs.Spec {
+	if bf.symbol != "" {
+		override := bf.override
+		return []jobs.Spec{{
+			Kind:     jobs.KindBackfill,
+			Provider: bf.provider,
+			Symbol:   bf.symbol,
+			Interval: bf.interval,
+			Override: &override,
+			// Lookback intentionally empty: an ad-hoc window comes from -from/-to
+			// or -lookback, not from YAML.
+		}}
 	}
-	base, quote, ok := normalize.Symbol(bf.symbol)
+	return loadJobs(cfg).Filter(jobs.KindBackfill)
+}
+
+// backfillTask is a fully-resolved unit of backfill work.
+type backfillTask struct {
+	provider    string
+	base, quote string
+	iv          model.Interval
+	start, end  time.Time
+	override    bool
+}
+
+// resolveBackfill overlays the CLI flags onto a job spec to produce a concrete
+// task. Precedence per field is: explicit CLI flag > spec (YAML) value >
+// default. The window is derived last: end = -to | now; start = -from |
+// (end - lookback), where lookback = -lookback | spec.Lookback.
+func resolveBackfill(spec jobs.Spec, bf backfillFlags, now time.Time) (backfillTask, error) {
+	base, quote, ok := normalize.Symbol(spec.Symbol)
 	if !ok {
-		log.Fatalf("backfill: unrecognized -symbol %q", bf.symbol)
+		return backfillTask{}, fmt.Errorf("unrecognized symbol")
 	}
-	start, err := parseTime(bf.from)
+
+	provider := spec.Provider
+	if bf.set["provider"] {
+		provider = bf.provider
+	}
+
+	intervalStr := spec.Interval
+	if bf.set["interval"] {
+		intervalStr = bf.interval
+	}
+	iv, err := parseInterval(intervalStr)
 	if err != nil {
-		log.Fatalf("backfill: bad -from: %v", err)
+		return backfillTask{}, err
 	}
+
+	override := spec.OverrideOrDefault()
+	if bf.set["override"] {
+		override = bf.override
+	}
+
+	// end: -to overrides now.
 	end := now
-	if bf.to != "" {
+	if bf.set["to"] {
 		if end, err = parseTime(bf.to); err != nil {
-			log.Fatalf("backfill: bad -to: %v", err)
+			return backfillTask{}, fmt.Errorf("bad -to: %w", err)
 		}
 	}
-	fetcher, err := provs.OHLCFetcher(bf.provider)
-	if err != nil {
-		log.Fatalf("backfill: %v", err)
+
+	// start: -from wins outright; otherwise derive from a lookback window
+	// (CLI -lookback overrides the job's YAML lookback).
+	var start time.Time
+	switch {
+	case bf.set["from"]:
+		if start, err = parseTime(bf.from); err != nil {
+			return backfillTask{}, fmt.Errorf("bad -from: %w", err)
+		}
+	case bf.set["lookback"]:
+		start = end.Add(-bf.lookback)
+	case strings.TrimSpace(spec.Lookback) != "":
+		lookback, err := spec.LookbackDuration()
+		if err != nil {
+			return backfillTask{}, err
+		}
+		start = end.Add(-lookback)
+	default:
+		return backfillTask{}, fmt.Errorf("no window: pass -from, or set -lookback / a job lookback")
 	}
-	bfr := backfill.New(fetcher, candleRepo)
-	if err := bfr.Run(ctx, base, quote, model.Interval(bf.interval), start, end, bf.override); err != nil {
-		log.Fatalf("backfill: %v", err)
+
+	return backfillTask{provider: provider, base: base, quote: quote, iv: iv, start: start, end: end, override: override}, nil
+}
+
+// parseInterval validates a backfill interval string against the full stored set
+// (allowing sub-minute intervals for ad-hoc runs, unlike a YAML poll/backfill
+// job which is restricted to 1m|5m|1h|1d).
+func parseInterval(s string) (model.Interval, error) {
+	iv := model.Interval(strings.TrimSpace(s))
+	if _, err := backfill.IntervalDuration(iv); err != nil {
+		return "", fmt.Errorf("bad interval %q: %w", s, err)
 	}
-	log.Println("backfill: done")
+	return iv, nil
 }
 
 // parseTime accepts RFC3339 or a plain YYYY-MM-DD date (interpreted as UTC).
