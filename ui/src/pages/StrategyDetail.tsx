@@ -16,7 +16,7 @@ import {
 ChartJS.register(LineElement, CategoryScale, LinearScale, PointElement, Tooltip, Legend);
 
 interface Strategy {
-  strategy_id: string;
+  id: string;
   name: string;
   start_date: string;
   interval: string;
@@ -26,8 +26,8 @@ interface Strategy {
 
 interface HistoryPoint {
   date: string;
-  actualValue: number;
-  expectedValue: number;
+  actual_value: number;
+  expected_value: number;
 }
 
 interface StrategySummary {
@@ -50,7 +50,7 @@ export default function StrategyDetail() {
 
     axios.get(`/strategy`)
       .then(res => {
-        const match = res.data.find((s: Strategy) => s.strategy_id === id);
+        const match = res.data.find((s: Strategy) => s.id === id);
         setStrategy(match);
       })
       .catch(err => console.error(err));
@@ -61,18 +61,18 @@ export default function StrategyDetail() {
   }, [id]);
 
   const chartData = {
-    labels: data.map(d => d.date),
+    labels: data.map(d => new Date(d.date).toLocaleDateString()),
     datasets: [
       {
         label: 'Actual Value',
-        data: data.map(d => d.actualValue),
+        data: data.map(d => d.actual_value),
         borderColor: 'rgb(59, 130, 246)',
         backgroundColor: 'rgba(59, 130, 246, 0.3)',
         tension: 0.3,
       },
       {
         label: 'Expected Value',
-        data: data.map(d => d.expectedValue),
+        data: data.map(d => d.expected_value),
         borderColor: 'rgb(34, 197, 94)',
         backgroundColor: 'rgba(34, 197, 94, 0.3)',
         tension: 0.3,
