@@ -15,6 +15,29 @@ const (
 	Interval1d Interval = "1d"
 )
 
+// IntervalForDuration maps a sampling duration to its stored interval label,
+// reporting ok=false for any duration outside the predefined set. Callers use it
+// to validate a configured interval and skip the job when it doesn't match,
+// rather than silently coercing to a default label.
+func IntervalForDuration(d time.Duration) (Interval, bool) {
+	switch d {
+	case time.Second:
+		return Interval1s, true
+	case 5 * time.Second:
+		return Interval5s, true
+	case time.Minute:
+		return Interval1m, true
+	case 5 * time.Minute:
+		return Interval5m, true
+	case time.Hour:
+		return Interval1h, true
+	case 24 * time.Hour:
+		return Interval1d, true
+	default:
+		return "", false
+	}
+}
+
 // Source identifies where an observation came from. The set is open (new
 // exchanges get added over time), so it is a plain string in Postgres.
 type Source string

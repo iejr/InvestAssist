@@ -2,6 +2,7 @@ package sampler
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"time"
 
@@ -37,15 +38,20 @@ type bucket struct {
 	volume      float64
 }
 
-// New creates a Sampler that flushes one candle per interval. The interval is
-// mapped to a stored label (e.g. 1m); unknown intervals still store using the
-// closest canonical label.
-func New(interval time.Duration, repo candleWriter) *Sampler {
+// New creates a Sampler that flushes one candle per interval. The interval must
+// be one of the predefined bucket sizes (1s,5s,1m,5m,1h,1d); any other duration
+// is rejected so the caller can skip the job rather than store candles under a
+// coerced label.
+func New(interval time.Duration, repo candleWriter) (*Sampler, error) {
+	label, ok := model.IntervalForDuration(interval)
+	if !ok {
+		return nil, fmt.Errorf("unsupported sample interval %s (want one of 1s,5s,1m,5m,1h,1d)", interval)
+	}
 	return &Sampler{
 		interval: interval,
-		label:    labelFor(interval),
+		label:    label,
 		repo:     repo,
-	}
+	}, nil
 }
 
 // Run consumes events until the channel closes or ctx is cancelled. On each
@@ -135,25 +141,5 @@ func (s *Sampler) store(b *bucket) {
 	})
 	if err != nil {
 		log.Printf("sampler: store %s/%s @ %s: %v", b.base, b.quote, b.openTime, err)
-	}
-}
-
-// labelFor maps a sampling duration to the stored interval label.
-func labelFor(d time.Duration) model.Interval {
-	switch d {
-	case time.Second:
-		return model.Interval1s
-	case 5 * time.Second:
-		return model.Interval5s
-	case time.Minute:
-		return model.Interval1m
-	case 5 * time.Minute:
-		return model.Interval5m
-	case time.Hour:
-		return model.Interval1h
-	case 24 * time.Hour:
-		return model.Interval1d
-	default:
-		return model.Interval1m
 	}
 }

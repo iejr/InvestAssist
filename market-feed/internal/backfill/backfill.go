@@ -1,6 +1,7 @@
-// Package backfill fetches historical klines from Binance and stores them as
-// candles, either overwriting existing rows (override) or filling only missing
-// buckets (gap-fill).
+// Package backfill fetches historical candles from any OHLC-capable provider
+// and stores them, either overwriting existing rows (override) or filling only
+// missing buckets (gap-fill). It is provider-agnostic: it depends on the
+// provider.OHLCFetcher capability, not on any specific exchange.
 package backfill
 
 import (
@@ -14,12 +15,6 @@ import (
 	"market-feed/internal/repository"
 )
 
-// klineSource fetches historical candles. *provider.BinanceREST satisfies it;
-// tests inject a fake.
-type klineSource interface {
-	Klines(ctx context.Context, symbol string, iv model.Interval, start, end time.Time) ([]model.PriceCandle, error)
-}
-
 // candleStore persists candles and reports what already exists.
 // *repository.CandleRepo satisfies it.
 type candleStore interface {
@@ -28,42 +23,44 @@ type candleStore interface {
 	ExistingOpenTimes(base, quote string, iv model.Interval, source model.Source, start, end time.Time) (map[int64]struct{}, error)
 }
 
-// Backfiller coordinates fetching klines and writing candles.
+// Backfiller coordinates fetching candles from an OHLC provider and writing
+// them. The provider is any provider.OHLCFetcher (Binance, Kraken, ...).
 type Backfiller struct {
-	src   klineSource
+	src   provider.OHLCFetcher
 	store candleStore
 }
 
-func New(src klineSource, store candleStore) *Backfiller {
+func New(src provider.OHLCFetcher, store candleStore) *Backfiller {
 	return &Backfiller{src: src, store: store}
 }
 
-// Run backfills [start, end) for one symbol at one interval.
+// Run backfills [start, end) for one (base, quote) edge at one interval.
 //
 //   - end is clamped to the last CLOSED interval boundary so an in-progress
 //     candle is never fetched or stored.
-//   - override=true overwrites existing rows (authoritative klines win);
+//   - override=true overwrites existing rows (authoritative candles win);
 //     override=false fills only buckets not already present.
-func (b *Backfiller) Run(ctx context.Context, symbol string, iv model.Interval, start, end time.Time, override bool) error {
+func (b *Backfiller) Run(ctx context.Context, base, quote string, iv model.Interval, start, end time.Time, override bool) error {
 	dur, err := IntervalDuration(iv)
 	if err != nil {
 		return err
 	}
+	edge := base + "/" + quote
 
 	// Clamp the upper bound to the last closed boundary.
 	lastClosed := end.UTC().Truncate(dur)
 	if !lastClosed.After(start) {
-		log.Printf("backfill %s %s: nothing to do (range before first closed candle)", symbol, iv)
+		log.Printf("backfill %s %s: nothing to do (range before first closed candle)", edge, iv)
 		return nil
 	}
 	start = start.UTC().Truncate(dur)
 
-	candles, err := b.src.Klines(ctx, symbol, iv, start, lastClosed)
+	candles, err := b.src.FetchOHLC(ctx, base, quote, iv, start, lastClosed)
 	if err != nil {
-		return fmt.Errorf("fetch klines: %w", err)
+		return fmt.Errorf("fetch ohlc: %w", err)
 	}
 	if len(candles) == 0 {
-		log.Printf("backfill %s %s: no klines returned for range %s..%s", symbol, iv, start, lastClosed)
+		log.Printf("backfill %s %s: no candles returned for range %s..%s", edge, iv, start, lastClosed)
 		return nil
 	}
 
@@ -71,13 +68,14 @@ func (b *Backfiller) Run(ctx context.Context, symbol string, iv model.Interval, 
 		if err := b.store.UpsertBatch(candles); err != nil {
 			return fmt.Errorf("upsert candles: %w", err)
 		}
-		log.Printf("backfill %s %s: wrote %d candles (override)", symbol, iv, len(candles))
+		log.Printf("backfill %s %s: wrote %d candles (override)", edge, iv, len(candles))
 		return nil
 	}
 
-	// Gap-fill: keep only candles whose bucket isn't already stored.
-	base, quote := candles[0].Base, candles[0].Quote
-	existing, err := b.store.ExistingOpenTimes(base, quote, iv, model.SourceBinance, start, lastClosed)
+	// Gap-fill: keep only candles whose bucket isn't already stored. Source is
+	// taken from the fetched candles so the existence check matches the provider
+	// that produced them.
+	existing, err := b.store.ExistingOpenTimes(base, quote, iv, candles[0].Source, start, lastClosed)
 	if err != nil {
 		return fmt.Errorf("read existing candles: %w", err)
 	}
@@ -90,7 +88,7 @@ func (b *Backfiller) Run(ctx context.Context, symbol string, iv model.Interval, 
 	if err := b.store.InsertBatch(missing); err != nil {
 		return fmt.Errorf("insert candles: %w", err)
 	}
-	log.Printf("backfill %s %s: filled %d missing of %d candles (gap-fill)", symbol, iv, len(missing), len(candles))
+	log.Printf("backfill %s %s: filled %d missing of %d candles (gap-fill)", edge, iv, len(missing), len(candles))
 	return nil
 }
 
@@ -114,8 +112,6 @@ func IntervalDuration(iv model.Interval) (time.Duration, error) {
 	}
 }
 
-// compile-time checks that the concrete types satisfy our seams.
-var (
-	_ klineSource = (*provider.BinanceREST)(nil)
-	_ candleStore = (*repository.CandleRepo)(nil)
-)
+// compile-time check that the concrete store satisfies our seam. The OHLC
+// source seam (provider.OHLCFetcher) is asserted in the provider package.
+var _ candleStore = (*repository.CandleRepo)(nil)
