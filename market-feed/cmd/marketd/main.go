@@ -131,6 +131,13 @@ func runServe(cfg config.Config, conns *db.Conns) {
 		if err != nil {
 			log.Fatalf("job: poll %s: %v", spec.Symbol, err)
 		}
+		// The poll cadence doubles as the candle interval it feeds, so it must be
+		// one of the predefined bucket sizes. Skip the job otherwise rather than
+		// sample under a coerced label.
+		if _, ok := model.IntervalForDuration(every); !ok {
+			log.Printf("job: poll %s: cadence %s is not a candle interval (1s,5s,1m,5m,1h,1d); skipping", spec.Symbol, every)
+			continue
+		}
 		pr := runner.NewPollRunner(tf, latestRepo, candleRepo, base, quote, runner.SourceFor(spec.Provider), every)
 		wg.Add(1)
 		started++
