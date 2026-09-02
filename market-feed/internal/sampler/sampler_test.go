@@ -36,12 +36,28 @@ func ev(base, quote string, price, vol float64, ts time.Time) provider.PriceEven
 	}
 }
 
+// TestNewRejectsNonPredefinedInterval ensures a bucket size outside the closed
+// set is rejected (so the caller can skip the job) instead of being coerced.
+func TestNewRejectsNonPredefinedInterval(t *testing.T) {
+	if _, err := New(90*time.Second, &fakeWriter{}); err == nil {
+		t.Fatal("New should reject a non-predefined interval")
+	}
+	for _, d := range []time.Duration{time.Second, 5 * time.Second, time.Minute, 5 * time.Minute, time.Hour, 24 * time.Hour} {
+		if _, err := New(d, &fakeWriter{}); err != nil {
+			t.Errorf("New(%s) should be accepted: %v", d, err)
+		}
+	}
+}
+
 // TestAggregationOHLC checks that many trades in one interval collapse into a
 // single candle with correct open/high/low/close and summed volume — the core
 // promise that a 1m candle captures every intra-minute tick, not a snapshot.
 func TestAggregationOHLC(t *testing.T) {
 	w := &fakeWriter{}
-	s := New(time.Minute, w)
+	s, err := New(time.Minute, w)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
 	buckets := make(map[string]*bucket)
 
 	base := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
@@ -82,7 +98,10 @@ func TestAggregationOHLC(t *testing.T) {
 // produce distinct candles.
 func TestSeparateBucketsPerEdgeAndWindow(t *testing.T) {
 	w := &fakeWriter{}
-	s := New(time.Minute, w)
+	s, err := New(time.Minute, w)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
 	buckets := make(map[string]*bucket)
 
 	t0 := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
@@ -101,7 +120,10 @@ func TestSeparateBucketsPerEdgeAndWindow(t *testing.T) {
 // rather than silently dropped.
 func TestRunFlushesOnChannelClose(t *testing.T) {
 	w := &fakeWriter{}
-	s := New(time.Minute, w)
+	s, err := New(time.Minute, w)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
 
 	in := make(chan provider.PriceEvent, 4)
 	ts := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)

@@ -36,8 +36,13 @@ func startSinks(ctx context.Context, b *bus.Bus, latest latestWriter, candles ca
 	go runLatest(ctx, latestCh, latest, coalesce)
 
 	for _, iv := range intervals {
+		s, err := sampler.New(iv, candles)
+		if err != nil {
+			log.Printf("sink: skipping candle sampler: %v", err)
+			continue
+		}
 		ch := b.Subscribe(1024)
-		go sampler.New(iv, candles).Run(ctx, ch)
+		go s.Run(ctx, ch)
 	}
 }
 
