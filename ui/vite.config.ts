@@ -1,15 +1,15 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 
+// All backend routes are served by strategy-server-go on :3000.
 export default defineConfig({
   plugins: [react()],
   server: {
     proxy: {
-      '/strategy': 'http://localhost:3000',
-      '/price': 'http://localhost:3000',
-      '/history': 'http://localhost:3000',
-      '/securities': 'http://localhost:3000',
-      '/summary': 'http://localhost:3000',
-    }
-  }
+      '/bases': 'http://localhost:3000',
+      '/quotes': 'http://localhost:3000',
+      '/strategies': 'http://localhost:3000',
+      '/transactions': 'http://localhost:3000',
+    },
+  },
 })
