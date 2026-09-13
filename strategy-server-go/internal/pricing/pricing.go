@@ -34,17 +34,33 @@ func New(latest, candles *gorm.DB) *Pricer {
 	return &Pricer{latest: latest, candles: candles}
 }
 
-// hop is one directed step of a route. It remembers the STORED edge orientation
-// (storedBase/storedQuote) so candle lookups query the row that actually exists,
-// and Invert tells whether the traversal runs against that orientation.
+// hop is one directed step of a route. from/to is the traversal direction;
+// invert says whether that runs against the stored edge orientation. invert is
+// the only primitive of the three — the stored orientation (what candle lookups
+// must query) is derived from it via storedBase/storedQuote.
 type hop struct {
-	from        string
-	to          string
-	storedBase  string
-	storedQuote string
-	price       float64   // latest price in the stored orientation
-	updatedAt   time.Time // latest_prices freshness for this edge
-	invert      bool      // true when traversing storedQuote -> storedBase
+	from      string
+	to        string
+	price     float64   // latest price in the stored orientation
+	updatedAt time.Time // latest_prices freshness for this edge
+	invert    bool      // true when traversing storedQuote -> storedBase
+}
+
+// storedBase / storedQuote recover the orientation the edge is actually stored
+// in (latest_prices, price_candles). Candle lookups must query that orientation
+// and then apply invert to the retrieved close.
+func (h hop) storedBase() string {
+	if h.invert {
+		return h.to
+	}
+	return h.from
+}
+
+func (h hop) storedQuote() string {
+	if h.invert {
+		return h.from
+	}
+	return h.to
 }
 
 // rate returns the multiplier for 1 unit of `from` expressed in `to`, using the
@@ -69,16 +85,16 @@ func (p *Pricer) snapshot() (*graph, error) {
 	}
 	g := &graph{adj: make(map[string]map[string]hop)}
 	for _, r := range rows {
-		if r.Price == 0 {
-			continue // an edge with a zero rate can't be inverted; skip it.
+		if r.Price <= 0 {
+			// Non-positive rate is corrupt / non-invertible (a legitimately tiny
+			// price like 0.000008 is still positive and kept). Skip the edge.
+			continue
 		}
 		g.link(r.Base, r.Quote, hop{
-			from: r.Base, to: r.Quote, storedBase: r.Base, storedQuote: r.Quote,
-			price: r.Price, updatedAt: r.UpdatedAt, invert: false,
+			from: r.Base, to: r.Quote, price: r.Price, updatedAt: r.UpdatedAt, invert: false,
 		})
 		g.link(r.Quote, r.Base, hop{
-			from: r.Quote, to: r.Base, storedBase: r.Base, storedQuote: r.Quote,
-			price: r.Price, updatedAt: r.UpdatedAt, invert: true,
+			from: r.Quote, to: r.Base, price: r.Price, updatedAt: r.UpdatedAt, invert: true,
 		})
 	}
 	return g, nil
@@ -238,7 +254,7 @@ func (p *Pricer) hopPriceAt(h hop, t time.Time, maxStaleness time.Duration) (rat
 	var c market.PriceCandle
 	q := p.candles.
 		Where("base = ? AND quote = ? AND interval = ? AND open_time <= ?",
-			h.storedBase, h.storedQuote, market.Interval1d, t).
+			h.storedBase(), h.storedQuote(), market.Interval1d, t).
 		Order("open_time desc").
 		Limit(1)
 	if err := q.First(&c).Error; err != nil {
