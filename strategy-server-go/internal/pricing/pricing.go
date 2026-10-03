@@ -1,4 +1,4 @@
-// Package pricing owns valuation: it reads the market-feed tables directly
+// Package pricing owns valuation: it reads market-feed's data directly
 // (Decision A1/B1) and converts an asset into a quote/display currency at an
 // arbitrary time.
 //
@@ -14,23 +14,33 @@
 package pricing
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	"strategy-server-go/internal/market"
 
+	"github.com/redis/go-redis/v9"
 	"gorm.io/gorm"
 )
 
-// Pricer answers valuation queries against the feed tables.
+// latestPricesKey is the single Redis HASH market-feed writes latest_prices
+// into. Field "{base}/{quote}" maps to a JSON-encoded market.LatestPrice.
+const latestPricesKey = "latest_prices"
+
+// Pricer answers valuation queries against the feed data.
 type Pricer struct {
-	latest  *gorm.DB // holds latest_prices (primary)
-	candles *gorm.DB // holds price_candles (history; may equal latest)
+	latest  *redis.Client // holds latest_prices
+	candles *gorm.DB      // holds price_candles
 }
 
-// New builds a Pricer. latest reads latest_prices; candles reads price_candles.
-func New(latest, candles *gorm.DB) *Pricer {
+// New builds a Pricer. latest reads latest_prices from Redis; candles reads
+// price_candles from Postgres.
+func New(latest *redis.Client, candles *gorm.DB) *Pricer {
 	return &Pricer{latest: latest, candles: candles}
 }
 
@@ -77,27 +87,55 @@ type graph struct {
 	adj map[string]map[string]hop
 }
 
-// snapshot loads every edge from latest_prices and builds a bidirectional graph.
+// snapshot loads every edge from latest_prices (one HGETALL) and builds a
+// bidirectional graph.
 func (p *Pricer) snapshot() (*graph, error) {
-	var rows []market.LatestPrice
-	if err := p.latest.Find(&rows).Error; err != nil {
-		return nil, err
+	raw, err := p.latest.HGetAll(context.Background(), latestPricesKey).Result()
+	if err != nil {
+		return nil, fmt.Errorf("pricing: HGETALL %s: %w", latestPricesKey, err)
 	}
+	return buildGraph(raw)
+}
+
+// buildGraph turns the raw HGETALL result (field "{base}/{quote}" -> JSON
+// market.LatestPrice) into a bidirectional graph. Split out from snapshot so
+// the graph-construction logic is unit-testable without a Redis connection.
+func buildGraph(raw map[string]string) (*graph, error) {
 	g := &graph{adj: make(map[string]map[string]hop)}
-	for _, r := range rows {
-		if r.Price <= 0 {
+	for field, val := range raw {
+		base, quote, ok := strings.Cut(field, "/")
+		if !ok {
+			continue // malformed field; skip rather than fail the whole snapshot.
+		}
+		var lp market.LatestPrice
+		if err := json.Unmarshal([]byte(val), &lp); err != nil {
+			return nil, fmt.Errorf("pricing: decode %q: %w", field, err)
+		}
+		if lp.Price <= 0 {
 			// Non-positive rate is corrupt / non-invertible (a legitimately tiny
 			// price like 0.000008 is still positive and kept). Skip the edge.
 			continue
 		}
-		g.link(r.Base, r.Quote, hop{
-			from: r.Base, to: r.Quote, price: r.Price, updatedAt: r.UpdatedAt, invert: false,
+		g.link(base, quote, hop{
+			from: base, to: quote, price: lp.Price, updatedAt: lp.UpdatedAt, invert: false,
 		})
-		g.link(r.Quote, r.Base, hop{
-			from: r.Quote, to: r.Base, price: r.Price, updatedAt: r.UpdatedAt, invert: true,
+		g.link(quote, base, hop{
+			from: quote, to: base, price: lp.Price, updatedAt: lp.UpdatedAt, invert: true,
 		})
 	}
 	return g, nil
+}
+
+// bases returns every distinct edge endpoint in the graph, sorted. Used by
+// Pricer.Bases instead of a separate query — every base that has at least one
+// edge is a key of adj.
+func (g *graph) bases() []string {
+	out := make([]string, 0, len(g.adj))
+	for b := range g.adj {
+		out = append(out, b)
+	}
+	sort.Strings(out)
+	return out
 }
 
 func (g *graph) link(from, to string, h hop) {
@@ -159,10 +197,11 @@ func backtrack(prev map[string]hop, base, quote string) []hop {
 // Bases returns the distinct assets usable as a strategy base — every base that
 // appears in latest_prices, sorted.
 func (p *Pricer) Bases() ([]string, error) {
-	var bases []string
-	err := p.latest.Model(&market.LatestPrice{}).
-		Distinct("base").Order("base asc").Pluck("base", &bases).Error
-	return bases, err
+	g, err := p.snapshot()
+	if err != nil {
+		return nil, err
+	}
+	return g.bases(), nil
 }
 
 // ReachableQuotes returns every currency reachable from base (direct or via a

@@ -1,7 +1,6 @@
-// Package market holds READ-ONLY mirrors of the market-feed tables
-// (latest_prices, price_candles). market-feed owns their schema and is the only
-// writer; this service never migrates or writes them. The structs mirror
-// market-feed/internal/model so GORM maps columns correctly.
+// Package market holds READ-ONLY mirrors of the data market-feed owns:
+// latest_prices (Redis HASH) and price_candles (Postgres). market-feed is the
+// only writer; this service never migrates or writes them.
 package market
 
 import "time"
@@ -19,17 +18,15 @@ const (
 	Interval1d Interval = "1d"
 )
 
-// LatestPrice is the newest observed value for a (base, quote) edge — one row
-// per edge. Used for live valuation and for edge/route discovery.
+// LatestPrice is the newest observed value for one (base, quote) edge — the
+// JSON value stored in Redis under HASH "latest_prices", field
+// "{base}/{quote}". Base/Quote aren't part of the value; they come from
+// splitting the field key (see pricing.snapshot).
 type LatestPrice struct {
-	Base      string    `gorm:"column:base" json:"base"`
-	Quote     string    `gorm:"column:quote" json:"quote"`
 	Price     float64   `json:"price"`
-	Source    string    `gorm:"type:text" json:"source"`
+	Source    string    `json:"source"`
 	UpdatedAt time.Time `json:"updated_at"`
 }
-
-func (LatestPrice) TableName() string { return "latest_prices" }
 
 // PriceCandle is one append-only OHLC observation in the native quote currency.
 type PriceCandle struct {

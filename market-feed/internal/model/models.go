@@ -47,19 +47,6 @@ const (
 	SourceKraken  Source = "kraken"
 )
 
-// LatestPrice is the newest observed value for a (base, quote) edge. One row
-// per edge, always upserted. This is a fact table — the newest observation,
-// never a derived pair.
-type LatestPrice struct {
-	Base      string    `gorm:"primaryKey;column:base" json:"base"`
-	Quote     string    `gorm:"primaryKey;column:quote" json:"quote"`
-	Price     float64   `json:"price"`
-	Source    Source    `gorm:"type:text" json:"source"`
-	UpdatedAt time.Time `json:"updated_at"`
-}
-
-func (LatestPrice) TableName() string { return "latest_prices" }
-
 // PriceCandle is an append-only OHLC observation in the native quote currency.
 // Real observations only — never backfilled with fabricated data. The unique
 // index makes klines backfill idempotent.

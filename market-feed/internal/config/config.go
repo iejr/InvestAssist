@@ -2,6 +2,7 @@ package config
 
 import (
 	"os"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -11,13 +12,18 @@ import (
 // the same Postgres instance as server-go without extra wiring.
 type Config struct {
 	// DatabaseURL is the shared Postgres DSN (same DB as server-go). Holds
-	// latest_prices, and price_candles too unless HistoryDatabaseURL is set.
+	// price_candles only — latest_prices lives in Redis.
 	DatabaseURL string
 
-	// HistoryDatabaseURL, when non-empty, routes append-only history
-	// (price_candles) to a separate Postgres instance. Empty means history
-	// lives alongside latest_prices in DatabaseURL.
-	HistoryDatabaseURL string
+	// RedisAddr is the Redis address (host:port) backing latest_prices,
+	// shared with strategy-server-go.
+	RedisAddr string
+
+	// RedisDB selects the Redis logical DB index.
+	RedisDB int
+
+	// RedisPassword authenticates to Redis, if required.
+	RedisPassword string
 
 	// Symbols are the Binance symbols to stream, in Binance's own notation
 	// (e.g. "BTCUSDT"). We start with BTC/USDT only.
@@ -53,15 +59,17 @@ type Config struct {
 // for local development.
 func Load() Config {
 	return Config{
-		DatabaseURL:        envOr("DATABASE_URL", "host=localhost user=postgres password=postgres dbname=invest_assist port=5432 sslmode=disable"),
-		HistoryDatabaseURL: strings.TrimSpace(os.Getenv("MF_HISTORY_DATABASE_URL")),
-		Symbols:            csvOr("MF_SYMBOLS", []string{"BTCUSDT"}),
-		SampleIntervals:    durationsOr("MF_SAMPLE_INTERVALS", []time.Duration{time.Minute}),
-		LatestCoalesce:     durationOr("MF_LATEST_COALESCE", time.Second),
-		BinanceWSBase:      envOr("MF_BINANCE_WS", "wss://stream.binance.com:9443"),
-		BinanceRESTBase:    envOr("MF_BINANCE_REST", "https://api.binance.com"),
-		KrakenRESTBase:     envOr("MF_KRAKEN_REST", "https://api.kraken.com"),
-		JobsFile:           strings.TrimSpace(os.Getenv("MF_JOBS_FILE")),
+		DatabaseURL:     envOr("DATABASE_URL", "host=localhost user=postgres password=postgres dbname=invest_assist port=5432 sslmode=disable"),
+		RedisAddr:       envOr("MF_REDIS_ADDR", "localhost:6379"),
+		RedisDB:         intOr("MF_REDIS_DB", 0),
+		RedisPassword:   os.Getenv("MF_REDIS_PASSWORD"),
+		Symbols:         csvOr("MF_SYMBOLS", []string{"BTCUSDT"}),
+		SampleIntervals: durationsOr("MF_SAMPLE_INTERVALS", []time.Duration{time.Minute}),
+		LatestCoalesce:  durationOr("MF_LATEST_COALESCE", time.Second),
+		BinanceWSBase:   envOr("MF_BINANCE_WS", "wss://stream.binance.com:9443"),
+		BinanceRESTBase: envOr("MF_BINANCE_REST", "https://api.binance.com"),
+		KrakenRESTBase:  envOr("MF_KRAKEN_REST", "https://api.kraken.com"),
+		JobsFile:        strings.TrimSpace(os.Getenv("MF_JOBS_FILE")),
 	}
 }
 
@@ -88,6 +96,18 @@ func csvOr(key string, def []string) []string {
 		return def
 	}
 	return out
+}
+
+func intOr(key string, def int) int {
+	v := strings.TrimSpace(os.Getenv(key))
+	if v == "" {
+		return def
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil {
+		return def
+	}
+	return n
 }
 
 func durationOr(key string, def time.Duration) time.Duration {

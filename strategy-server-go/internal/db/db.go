@@ -23,39 +23,19 @@ var gormLogger = logger.New(
 	},
 )
 
-// Conns holds the database handles. Primary owns the strategy tables and
-// latest_prices; History holds price_candles and may point at a separate
-// instance (or at Primary when no split is configured), mirroring market-feed.
-type Conns struct {
-	Primary *gorm.DB
-	History *gorm.DB
-}
-
-// Open connects to Postgres and migrates ONLY the strategy-owned tables. The
-// market-feed tables (latest_prices, price_candles) are owned and migrated by
-// market-feed; this service never touches their schema.
-func Open(primaryDSN, historyDSN string) (*Conns, error) {
-	primary, err := connect(primaryDSN)
+// Open connects to Postgres and migrates ONLY the strategy-owned tables
+// (strategies, transactions). price_candles is owned and migrated by
+// market-feed; latest_prices lives in Redis — neither is touched here.
+func Open(dsn string) (*gorm.DB, error) {
+	db, err := connect(dsn)
 	if err != nil {
-		return nil, fmt.Errorf("primary db: %w", err)
+		return nil, fmt.Errorf("db: %w", err)
 	}
-	if err := primary.AutoMigrate(&model.Strategy{}, &model.Transaction{}); err != nil {
+	if err := db.AutoMigrate(&model.Strategy{}, &model.Transaction{}); err != nil {
 		return nil, fmt.Errorf("migrate strategy tables: %w", err)
 	}
-
-	history := primary
-	if historyDSN != "" {
-		history, err = connect(historyDSN)
-		if err != nil {
-			return nil, fmt.Errorf("history db: %w", err)
-		}
-		log.Println("db: price_candles read from separate MF_HISTORY_DATABASE_URL")
-	} else {
-		log.Println("db: price_candles read from the primary database")
-	}
-
 	log.Println("db: connected and migrated")
-	return &Conns{Primary: primary, History: history}, nil
+	return db, nil
 }
 
 func connect(dsn string) (*gorm.DB, error) {
