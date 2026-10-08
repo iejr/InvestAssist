@@ -16,7 +16,6 @@ import {
   type History,
   type Summary,
   type Transaction,
-  type TxType,
 } from '../api/strategy';
 
 ChartJS.register(LineElement, CategoryScale, LinearScale, PointElement, Tooltip, Legend);
@@ -32,11 +31,11 @@ export default function StrategyDetail() {
   const [display, setDisplay] = useState<string>('');
 
   const [tx, setTx] = useState({
-    type: 'BUY' as TxType,
-    shares: '',
-    price: '',
-    fee_currency: '',
-    fee_amount: '',
+    spent_symbol: '',
+    spent_amount: '',
+    gained_symbol: '',
+    gained_amount: '',
+    memo: '',
     timestamp: '',
   });
 
@@ -63,7 +62,7 @@ export default function StrategyDetail() {
     refresh();
   }, [refresh]);
 
-  const handleTxChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
+  const handleTxChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const { name, value } = e.target;
     setTx((prev) => ({ ...prev, [name]: value }));
   };
@@ -73,14 +72,14 @@ export default function StrategyDetail() {
     if (!id) return;
     await api.createTransaction({
       strategy_id: id,
-      type: tx.type,
-      shares: parseFloat(tx.shares),
-      price: parseFloat(tx.price),
-      fee_currency: tx.fee_currency.trim(),
-      fee_amount: tx.fee_amount ? parseFloat(tx.fee_amount) : 0,
+      spent_symbol: tx.spent_symbol.trim(),
+      spent_amount: parseFloat(tx.spent_amount),
+      gained_symbol: tx.gained_symbol.trim(),
+      gained_amount: parseFloat(tx.gained_amount),
+      memo: tx.memo.trim(),
       timestamp: tx.timestamp,
     });
-    setTx({ type: 'BUY', shares: '', price: '', fee_currency: '', fee_amount: '', timestamp: '' });
+    setTx({ spent_symbol: '', spent_amount: '', gained_symbol: '', gained_amount: '', memo: '', timestamp: '' });
     refresh();
   };
 
@@ -161,31 +160,28 @@ export default function StrategyDetail() {
         <h2 className="text-lg font-semibold">Record Transaction</h2>
         <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
           <label className="block">
-            <span className="text-sm text-gray-600">Type</span>
-            <select name="type" value={tx.type} onChange={handleTxChange} className="w-full border px-2 py-1">
-              <option value="BUY">Buy</option>
-              <option value="SELL">Sell</option>
-            </select>
-          </label>
-          <label className="block">
             <span className="text-sm text-gray-600">Date</span>
             <input name="timestamp" type="date" value={tx.timestamp} onChange={handleTxChange} className="w-full border px-2 py-1" required />
           </label>
           <label className="block">
-            <span className="text-sm text-gray-600">Shares</span>
-            <input name="shares" type="number" step="any" value={tx.shares} onChange={handleTxChange} className="w-full border px-2 py-1" required />
+            <span className="text-sm text-gray-600">Spent symbol</span>
+            <input name="spent_symbol" placeholder={`e.g. ${strategy?.quote ?? 'USDT'}`} value={tx.spent_symbol} onChange={handleTxChange} className="w-full border px-2 py-1" required />
           </label>
           <label className="block">
-            <span className="text-sm text-gray-600">Price ({strategy?.quote ?? 'quote'})</span>
-            <input name="price" type="number" step="any" value={tx.price} onChange={handleTxChange} className="w-full border px-2 py-1" required />
+            <span className="text-sm text-gray-600">Spent amount</span>
+            <input name="spent_amount" type="number" step="any" value={tx.spent_amount} onChange={handleTxChange} className="w-full border px-2 py-1" required />
           </label>
           <label className="block">
-            <span className="text-sm text-gray-600">Fee currency</span>
-            <input name="fee_currency" placeholder="e.g. USDT" value={tx.fee_currency} onChange={handleTxChange} className="w-full border px-2 py-1" />
+            <span className="text-sm text-gray-600">Gained symbol</span>
+            <input name="gained_symbol" placeholder={`e.g. ${strategy?.base ?? 'BTC'}`} value={tx.gained_symbol} onChange={handleTxChange} className="w-full border px-2 py-1" required />
           </label>
           <label className="block">
-            <span className="text-sm text-gray-600">Fee amount</span>
-            <input name="fee_amount" type="number" step="any" value={tx.fee_amount} onChange={handleTxChange} className="w-full border px-2 py-1" />
+            <span className="text-sm text-gray-600">Gained amount</span>
+            <input name="gained_amount" type="number" step="any" value={tx.gained_amount} onChange={handleTxChange} className="w-full border px-2 py-1" required />
+          </label>
+          <label className="block">
+            <span className="text-sm text-gray-600">Memo</span>
+            <input name="memo" placeholder="optional note" value={tx.memo} onChange={handleTxChange} className="w-full border px-2 py-1" />
           </label>
         </div>
         <button type="submit" className="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700">
@@ -202,20 +198,18 @@ export default function StrategyDetail() {
             <thead>
               <tr className="text-left text-gray-500">
                 <th className="py-1">Date</th>
-                <th>Type</th>
-                <th>Shares</th>
-                <th>Price</th>
-                <th>Fee</th>
+                <th>Spent</th>
+                <th>Gained</th>
+                <th>Memo</th>
               </tr>
             </thead>
             <tbody>
               {transactions.map((t) => (
                 <tr key={t.id} className="border-t">
                   <td className="py-1">{t.timestamp.slice(0, 10)}</td>
-                  <td>{t.type}</td>
-                  <td>{t.shares}</td>
-                  <td>{t.price}</td>
-                  <td>{t.fee_amount ? `${t.fee_amount} ${t.fee_currency}` : '—'}</td>
+                  <td>{t.spent_amount} {t.spent_symbol}</td>
+                  <td>{t.gained_amount} {t.gained_symbol}</td>
+                  <td className="text-gray-500">{t.memo || '—'}</td>
                 </tr>
               ))}
             </tbody>

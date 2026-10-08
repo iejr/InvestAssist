@@ -206,13 +206,13 @@ func (h *Handler) listTransactions(c echo.Context) error {
 
 // createTransactionReq is the record-transaction body.
 type createTransactionReq struct {
-	StrategyID  string                `json:"strategy_id"`
-	Type        model.TransactionType `json:"type"`
-	Shares      float64               `json:"shares"`
-	Price       float64               `json:"price"`
-	FeeCurrency string                `json:"fee_currency"`
-	FeeAmount   float64               `json:"fee_amount"`
-	Timestamp   string                `json:"timestamp"`
+	StrategyID   string  `json:"strategy_id"`
+	SpentSymbol  string  `json:"spent_symbol"`
+	SpentAmount  float64 `json:"spent_amount"`
+	GainedSymbol string  `json:"gained_symbol"`
+	GainedAmount float64 `json:"gained_amount"`
+	Memo         string  `json:"memo"`
+	Timestamp    string  `json:"timestamp"`
 }
 
 func (h *Handler) createTransaction(c echo.Context) error {
@@ -224,21 +224,23 @@ func (h *Handler) createTransaction(c echo.Context) error {
 	if err != nil {
 		return badRequest(c, "invalid strategy_id")
 	}
-	if req.Type != model.TransactionTypeBuy && req.Type != model.TransactionTypeSell {
-		return badRequest(c, "type must be BUY or SELL")
+	spentSymbol := strings.TrimSpace(req.SpentSymbol)
+	gainedSymbol := strings.TrimSpace(req.GainedSymbol)
+	if spentSymbol == "" || gainedSymbol == "" {
+		return badRequest(c, "spent_symbol and gained_symbol are required")
 	}
 	ts, err := parseDate(req.Timestamp)
 	if err != nil {
 		return badRequest(c, "invalid timestamp")
 	}
 	t := model.Transaction{
-		StrategyID:  sid,
-		Type:        req.Type,
-		Shares:      req.Shares,
-		Price:       req.Price,
-		FeeCurrency: strings.TrimSpace(req.FeeCurrency),
-		FeeAmount:   req.FeeAmount,
-		Timestamp:   ts,
+		StrategyID:   sid,
+		SpentSymbol:  spentSymbol,
+		SpentAmount:  req.SpentAmount,
+		GainedSymbol: gainedSymbol,
+		GainedAmount: req.GainedAmount,
+		Memo:         strings.TrimSpace(req.Memo),
+		Timestamp:    ts,
 	}
 	if err := h.db.Create(&t).Error; err != nil {
 		return serverErr(c, err)

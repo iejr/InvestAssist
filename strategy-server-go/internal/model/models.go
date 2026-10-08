@@ -54,27 +54,22 @@ type Strategy struct {
 	DeletedAt gorm.DeletedAt `gorm:"index" json:"-"`
 }
 
-// TransactionType is the direction of a user-recorded trade.
-type TransactionType string
-
-const (
-	TransactionTypeBuy  TransactionType = "BUY"
-	TransactionTypeSell TransactionType = "SELL"
-)
-
-// Transaction is a user-recorded execution. Shares and Price are exactly what
-// the user entered (executed price); valuation prices come from the feed, not
-// from here. Fees are recorded in their own currency + amount so cost-basis
-// treatment can evolve later without a schema change.
+// Transaction is a user-recorded execution: what left the wallet (Spent) and
+// what entered it (Gained). Amounts are net — fees, slippage, and anything
+// else the exchange took are already folded in by the user, so there's no
+// separate fee accounting here. Valuation prices still come from the feed,
+// never from this record.
 type Transaction struct {
-	ID          uuid.UUID       `gorm:"type:uuid;primaryKey" json:"id"`
-	StrategyID  uuid.UUID       `gorm:"type:uuid;index" json:"strategy_id"`
-	Type        TransactionType `json:"type"`
-	Shares      float64         `json:"shares"`
-	Price       float64         `json:"price"`        // executed price in the strategy's quote
-	FeeCurrency string          `json:"fee_currency"` // e.g. USDT, BNB; empty ⇒ no fee
-	FeeAmount   float64         `json:"fee_amount"`
-	Timestamp   time.Time       `json:"timestamp"`
+	ID         uuid.UUID `gorm:"type:uuid;primaryKey" json:"id"`
+	StrategyID uuid.UUID `gorm:"type:uuid;index" json:"strategy_id"`
+
+	SpentSymbol  string  `json:"spent_symbol"`
+	SpentAmount  float64 `json:"spent_amount"`
+	GainedSymbol string  `json:"gained_symbol"`
+	GainedAmount float64 `json:"gained_amount"`
+
+	Memo      string    `json:"memo"` // free text; not used in any calculation
+	Timestamp time.Time `json:"timestamp"`
 
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`

@@ -102,7 +102,7 @@ func (s *Service) GetHistory(id uuid.UUID, display string, rangeFrom time.Time, 
 	for i, d := range dates {
 		// Fold in every transaction executed at-or-before this date.
 		for txIdx < len(txs) && !txs[txIdx].Timestamp.After(d) {
-			shares += signedShares(txs[txIdx])
+			shares += signedShares(txs[txIdx], strat)
 			txIdx++
 		}
 
@@ -159,8 +159,8 @@ func (s *Service) GetSummary(id uuid.UUID, display string, now time.Time) (*Summ
 
 	var sharesNow, invested float64
 	for _, t := range txs {
-		sharesNow += signedShares(t)
-		invested += signedCost(t) + feeInQuote(t, strat.Quote)
+		sharesNow += signedShares(t, strat)
+		invested += signedCost(t, strat)
 	}
 
 	sum := &Summary{
@@ -323,30 +323,32 @@ func recommended(strat model.Strategy, target, actual float64) float64 {
 	return strat.Increment
 }
 
-func signedShares(t model.Transaction) float64 {
-	if t.Type == model.TransactionTypeSell {
-		return -t.Shares
+// signedShares is the strategy's base asset moved by a transaction: positive
+// when base was gained (bought), negative when base was spent (sold). A
+// transaction touching neither side of strat.Base contributes nothing.
+func signedShares(t model.Transaction, strat model.Strategy) float64 {
+	switch {
+	case t.GainedSymbol == strat.Base:
+		return t.GainedAmount
+	case t.SpentSymbol == strat.Base:
+		return -t.SpentAmount
+	default:
+		return 0
 	}
-	return t.Shares
 }
 
-// signedCost is the quote cash moved by a trade (naive: sells reduce basis by
-// their proceeds — a noted v1 limitation).
-func signedCost(t model.Transaction) float64 {
-	c := t.Shares * t.Price
-	if t.Type == model.TransactionTypeSell {
-		return -c
+// signedCost is the quote cash moved by a transaction (naive: proceeds from
+// a sale reduce basis directly — a noted v1 limitation). A transaction
+// touching neither side of strat.Quote contributes nothing.
+func signedCost(t model.Transaction, strat model.Strategy) float64 {
+	switch {
+	case t.SpentSymbol == strat.Quote:
+		return t.SpentAmount
+	case t.GainedSymbol == strat.Quote:
+		return -t.GainedAmount
+	default:
+		return 0
 	}
-	return c
-}
-
-// feeInQuote folds a fee into invested cash only when it is denominated in the
-// strategy's quote; other fee currencies are ignored in v1 (noted limitation).
-func feeInQuote(t model.Transaction, quote string) float64 {
-	if t.FeeCurrency == quote {
-		return t.FeeAmount
-	}
-	return 0
 }
 
 // generateDates returns interval dates from start up to (and including) now.
