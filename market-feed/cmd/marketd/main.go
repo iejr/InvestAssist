@@ -16,10 +16,14 @@ import (
 	"market-feed/internal/config"
 	"market-feed/internal/db"
 	"market-feed/internal/jobs"
+	"market-feed/internal/latestcache"
 	"market-feed/internal/model"
 	"market-feed/internal/normalize"
 	"market-feed/internal/repository"
 	"market-feed/internal/runner"
+
+	"github.com/redis/go-redis/v9"
+	"gorm.io/gorm"
 )
 
 // backfillFlags collects the -backfill CLI options. They apply uniformly to
@@ -60,16 +64,18 @@ func main() {
 
 	cfg := config.Load()
 
-	conns, err := db.Open(cfg.DatabaseURL, cfg.HistoryDatabaseURL)
+	pg, err := db.Open(cfg.DatabaseURL)
 	if err != nil {
 		log.Fatalf("db: %v", err)
 	}
 
 	if bf.enabled {
-		runBackfill(cfg, conns, bf)
+		runBackfill(cfg, pg, bf)
 		return
 	}
-	runServe(cfg, conns)
+
+	rdb := redis.NewClient(&redis.Options{Addr: cfg.RedisAddr, DB: cfg.RedisDB, Password: cfg.RedisPassword})
+	runServe(cfg, pg, rdb)
 }
 
 // loadJobs reads the configured jobs file, or falls back to the built-in default
@@ -88,14 +94,14 @@ func loadJobs(cfg config.Config) jobs.File {
 // runServe is the default mode: it starts every long-running job (stream + poll)
 // from the jobs file and blocks until interrupted. Backfill is not run here — it
 // is one-off, driven externally (cron -> -backfill).
-func runServe(cfg config.Config, conns *db.Conns) {
+func runServe(cfg config.Config, pg *gorm.DB, rdb *redis.Client) {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
 	jf := loadJobs(cfg)
 	provs := runner.NewProviders(cfg)
-	latestRepo := repository.NewLatestRepo(conns.Primary)
-	candleRepo := repository.NewCandleRepo(conns.History)
+	latestRepo := latestcache.New(rdb)
+	candleRepo := repository.NewCandleRepo(pg)
 
 	var wg sync.WaitGroup
 	started := 0
@@ -162,12 +168,12 @@ func runServe(cfg config.Config, conns *db.Conns) {
 // of job specs (a single synthetic spec from CLI flags when -symbol is given,
 // otherwise the backfill jobs from the jobs file), resolve each into a concrete
 // window+params, and run them through the same loop.
-func runBackfill(cfg config.Config, conns *db.Conns, bf backfillFlags) {
+func runBackfill(cfg config.Config, pg *gorm.DB, bf backfillFlags) {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
 	provs := runner.NewProviders(cfg)
-	candleRepo := repository.NewCandleRepo(conns.History)
+	candleRepo := repository.NewCandleRepo(pg)
 	now := time.Now().UTC()
 
 	specs := seedBackfillSpecs(cfg, bf)

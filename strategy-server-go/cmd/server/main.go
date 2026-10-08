@@ -13,19 +13,21 @@ import (
 
 	"github.com/labstack/echo/v4"
 	"github.com/labstack/echo/v4/middleware"
+	"github.com/redis/go-redis/v9"
 )
 
 func main() {
 	cfg := config.Load()
 
-	conns, err := db.Open(cfg.DatabaseURL, cfg.HistoryDatabaseURL)
+	pg, err := db.Open(cfg.DatabaseURL)
 	if err != nil {
 		log.Fatalf("db: %v", err)
 	}
+	rdb := redis.NewClient(&redis.Options{Addr: cfg.RedisAddr, DB: cfg.RedisDB, Password: cfg.RedisPassword})
 
-	pricer := pricing.New(conns.Primary, conns.History)
-	svc := strategy.New(conns.Primary, pricer, cfg.MaxStalenessOverride)
-	h := api.New(conns.Primary, pricer, svc, nil)
+	pricer := pricing.New(rdb, pg)
+	svc := strategy.New(pg, pricer, cfg.MaxStalenessOverride)
+	h := api.New(pg, pricer, svc, nil)
 
 	e := echo.New()
 	e.HideBanner = true

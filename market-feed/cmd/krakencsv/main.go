@@ -67,11 +67,11 @@ func main() {
 	}
 
 	cfg := config.Load()
-	conns, err := db.Open(cfg.DatabaseURL, cfg.HistoryDatabaseURL)
+	pg, err := db.Open(cfg.DatabaseURL)
 	if err != nil {
 		log.Fatalf("db: %v", err)
 	}
-	candleRepo := repository.NewCandleRepo(conns.History)
+	candleRepo := repository.NewCandleRepo(pg)
 
 	entries, err := os.ReadDir(*dir)
 	if err != nil {
