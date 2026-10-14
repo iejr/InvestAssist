@@ -6,7 +6,8 @@ package market
 import "time"
 
 // Interval is the OHLC bucket label used in price_candles. History valuation
-// uses the daily bucket (Interval1d): last close at-or-before a date.
+// is granularity-agnostic: it takes the newest candle of ANY interval at-or-
+// before the lookup time (see pricing.hopPriceAt).
 type Interval string
 
 const (

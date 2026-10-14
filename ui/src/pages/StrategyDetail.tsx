@@ -77,7 +77,7 @@ export default function StrategyDetail() {
       gained_symbol: tx.gained_symbol.trim(),
       gained_amount: parseFloat(tx.gained_amount),
       memo: tx.memo.trim(),
-      timestamp: tx.timestamp,
+      timestamp: new Date(tx.timestamp).toISOString(),
     });
     setTx({ spent_symbol: '', spent_amount: '', gained_symbol: '', gained_amount: '', memo: '', timestamp: '' });
     refresh();
@@ -160,8 +160,8 @@ export default function StrategyDetail() {
         <h2 className="text-lg font-semibold">Record Transaction</h2>
         <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
           <label className="block">
-            <span className="text-sm text-gray-600">Date</span>
-            <input name="timestamp" type="date" value={tx.timestamp} onChange={handleTxChange} className="w-full border px-2 py-1" required />
+            <span className="text-sm text-gray-600">Date &amp; time</span>
+            <input name="timestamp" type="datetime-local" value={tx.timestamp} onChange={handleTxChange} className="w-full border px-2 py-1" required />
           </label>
           <label className="block">
             <span className="text-sm text-gray-600">Spent symbol</span>
@@ -197,7 +197,7 @@ export default function StrategyDetail() {
           <table className="w-full text-sm">
             <thead>
               <tr className="text-left text-gray-500">
-                <th className="py-1">Date</th>
+                <th className="py-1">Date &amp; time</th>
                 <th>Spent</th>
                 <th>Gained</th>
                 <th>Memo</th>
@@ -206,7 +206,7 @@ export default function StrategyDetail() {
             <tbody>
               {transactions.map((t) => (
                 <tr key={t.id} className="border-t">
-                  <td className="py-1">{t.timestamp.slice(0, 10)}</td>
+                  <td className="py-1">{new Date(t.timestamp).toLocaleString()}</td>
                   <td>{t.spent_amount} {t.spent_symbol}</td>
                   <td>{t.gained_amount} {t.gained_symbol}</td>
                   <td className="text-gray-500">{t.memo || '—'}</td>
