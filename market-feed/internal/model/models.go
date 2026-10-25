@@ -52,10 +52,10 @@ const (
 // index makes klines backfill idempotent.
 type PriceCandle struct {
 	ID       uint64   `gorm:"primaryKey;autoIncrement" json:"id"`
-	Base     string   `gorm:"uniqueIndex:uq_candle,priority:1;index:idx_candle_lookup,priority:1" json:"base"`
-	Quote    string   `gorm:"uniqueIndex:uq_candle,priority:2;index:idx_candle_lookup,priority:2" json:"quote"`
+	Base     string   `gorm:"uniqueIndex:uq_candle,priority:1;index:idx_candle_lookup,priority:1;index:idx_candle_asof,priority:1" json:"base"`
+	Quote    string   `gorm:"uniqueIndex:uq_candle,priority:2;index:idx_candle_lookup,priority:2;index:idx_candle_asof,priority:2" json:"quote"`
 	Interval Interval `gorm:"type:text;uniqueIndex:uq_candle,priority:3;index:idx_candle_lookup,priority:3;check:interval IN ('1s','5s','1m','5m','1h','1d')" json:"interval"`
-	OpenTime time.Time `gorm:"uniqueIndex:uq_candle,priority:4;index:idx_candle_lookup,priority:4,sort:desc" json:"open_time"`
+	OpenTime time.Time `gorm:"uniqueIndex:uq_candle,priority:4;index:idx_candle_lookup,priority:4,sort:desc;index:idx_candle_asof,priority:3,sort:desc" json:"open_time"`
 	Open     float64  `json:"open"`
 	High     float64  `json:"high"`
 	Low      float64  `json:"low"`

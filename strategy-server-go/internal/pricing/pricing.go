@@ -288,12 +288,16 @@ func (p *Pricer) PriceAt(base, quote string, t time.Time, maxStaleness time.Dura
 	return price, true, nil
 }
 
-// hopPriceAt fetches the daily-close as-of price for a single hop.
+// hopPriceAt fetches the as-of close for a single hop. It is granularity-
+// agnostic: it takes whichever candle (any interval) has the newest open_time
+// at-or-before t, so finer-grained data naturally wins when it exists and
+// coarser data still answers when it's all there is. maxStaleness is the only
+// guard against a stale match, regardless of which interval it came from.
 func (p *Pricer) hopPriceAt(h hop, t time.Time, maxStaleness time.Duration) (rate float64, ok bool, err error) {
 	var c market.PriceCandle
 	q := p.candles.
-		Where("base = ? AND quote = ? AND interval = ? AND open_time <= ?",
-			h.storedBase(), h.storedQuote(), market.Interval1d, t).
+		Where("base = ? AND quote = ? AND open_time <= ?",
+			h.storedBase(), h.storedQuote(), t).
 		Order("open_time desc").
 		Limit(1)
 	if err := q.First(&c).Error; err != nil {

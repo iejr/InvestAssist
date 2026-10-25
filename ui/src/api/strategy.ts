@@ -6,7 +6,6 @@ import axios from 'axios';
 
 export type StrategyType = 'VA' | 'DCA';
 export type Interval = 'weekly' | 'monthly';
-export type TxType = 'BUY' | 'SELL';
 
 export interface Strategy {
   id: string;
@@ -72,21 +71,21 @@ export interface Summary {
 export interface Transaction {
   id: string;
   strategy_id: string;
-  type: TxType;
-  shares: number;
-  price: number;
-  fee_currency: string;
-  fee_amount: number;
+  spent_symbol: string;
+  spent_amount: number;
+  gained_symbol: string;
+  gained_amount: number;
+  memo: string;
   timestamp: string;
 }
 
 export interface CreateTransactionReq {
   strategy_id: string;
-  type: TxType;
-  shares: number;
-  price: number;
-  fee_currency: string;
-  fee_amount: number;
+  spent_symbol: string;
+  spent_amount: number;
+  gained_symbol: string;
+  gained_amount: number;
+  memo: string;
   timestamp: string;
 }
 
