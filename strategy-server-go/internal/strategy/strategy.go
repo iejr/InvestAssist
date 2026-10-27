@@ -37,8 +37,8 @@ type HistoryPoint struct {
 	StepCount  int       `json:"step_count"`
 	SharesHeld float64   `json:"shares_held"`
 
-	Target      float64  `json:"target"`                  // quote units
-	Actual      *float64 `json:"actual"`                  // quote units; nil ⇒ price missing
+	Target      float64  `json:"target"`                   // quote units
+	Actual      *float64 `json:"actual"`                   // quote units; nil ⇒ price missing
 	Recommended *float64 `json:"recommended_contribution"` // quote units; nil ⇒ price missing (VA)
 
 	DisplayTarget      *float64 `json:"display_target"`
@@ -65,12 +65,12 @@ type Summary struct {
 	Quote      string    `json:"quote"`
 	Display    string    `json:"display"`
 
-	SharesHeld    float64  `json:"shares_held"`
-	Target        float64  `json:"target"`         // latest interval target, quote
-	Actual        *float64 `json:"actual"`         // latest interval actual (candle), quote
-	CurrentValue  *float64 `json:"current_value"`  // live value from latest_prices, quote
-	TotalInvested float64  `json:"total_invested"` // quote
-	GainLoss      *float64 `json:"gain_loss"`      // current_value - invested, quote
+	SharesHeld      float64  `json:"shares_held"`
+	Target          float64  `json:"target"`                        // latest interval target, quote
+	Actual          *float64 `json:"actual"`                        // latest interval actual (candle), quote
+	CurrentValue    *float64 `json:"current_value"`                 // live value from latest_prices, quote
+	TotalInvested   float64  `json:"total_invested"`                // quote
+	GainLoss        *float64 `json:"gain_loss"`                     // current_value - invested, quote
 	NextRecommended *float64 `json:"next_recommended_contribution"` // quote
 
 	DisplayCurrentValue    *float64 `json:"display_current_value"`
@@ -81,10 +81,20 @@ type Summary struct {
 	PriceStale bool `json:"price_stale"` // true when the live edge has no route/price
 }
 
-// GetHistory builds the interval-cadence series for a strategy in the requested
-// display currency (empty ⇒ the strategy's own quote). rangeFrom, if non-zero,
-// drops points before it (the series itself is always computed from start).
-func (s *Service) GetHistory(id uuid.UUID, display string, rangeFrom time.Time, now time.Time) (*History, error) {
+// GetHistory builds a value series for a strategy in the requested display
+// currency (empty ⇒ the strategy's own quote). The date axis is independent
+// of the strategy's contribution interval — it's a bounded, evenly-spaced
+// sample (see sampleDates), not one point per interval step. Target and
+// Recommended are still anchored to the strategy's own weekly/monthly cadence
+// (via a cheap, DB-free elapsed-step count), so VA/DCA math is unaffected by
+// how densely the chart itself is sampled.
+//
+// rangeFrom, if non-zero, narrows the sampled window itself (not a post-hoc
+// filter) so maxPoints resolution is spent inside the requested range rather
+// than across the strategy's whole lifetime. maxPoints bounds the number of
+// points returned; pricing is resolved (route discovery) once per request,
+// not once per date, regardless of how many points are sampled.
+func (s *Service) GetHistory(id uuid.UUID, display string, rangeFrom time.Time, now time.Time, maxPoints int) (*History, error) {
 	strat, txs, err := s.load(id)
 	if err != nil {
 		return nil, err
@@ -94,19 +104,46 @@ func (s *Service) GetHistory(id uuid.UUID, display string, rangeFrom time.Time, 
 	}
 	staleness := s.maxStaleness(strat)
 
-	dates := generateDates(strat.StartDate, strat.Interval, now)
+	// Pure date math (no DB/pricing calls) — anchors Target/Recommended to
+	// the strategy's own cadence independent of the chart's sample dates.
+	intervalDates := generateDates(strat.StartDate, strat.Interval, now)
+
+	effectiveStart := strat.StartDate
+	if !rangeFrom.IsZero() && rangeFrom.After(effectiveStart) {
+		effectiveStart = rangeFrom
+	}
+	dates := sampleDates(effectiveStart, now, maxPoints)
+
+	baseRoute, baseOK, err := s.pricer.ResolveRoute(strat.Base, strat.Quote)
+	if err != nil {
+		return nil, err
+	}
+	displaySame := display == strat.Quote
+	var displayRoute *pricing.Route
+	if !displaySame {
+		displayRoute, _, err = s.pricer.ResolveRoute(strat.Quote, display)
+		if err != nil {
+			return nil, err
+		}
+	}
+
 	points := make([]HistoryPoint, 0, len(dates))
 	txIdx := 0
+	intervalIdx := 0
 	var shares float64
 
-	for i, d := range dates {
+	for _, d := range dates {
 		// Fold in every transaction executed at-or-before this date.
 		for txIdx < len(txs) && !txs[txIdx].Timestamp.After(d) {
 			shares += signedShares(txs[txIdx], strat)
 			txIdx++
 		}
-
-		stepCount := i + 1
+		// Elapsed interval steps as-of this date — independent of whether d
+		// itself lands on an interval boundary.
+		for intervalIdx < len(intervalDates) && !intervalDates[intervalIdx].After(d) {
+			intervalIdx++
+		}
+		stepCount := intervalIdx
 		target := float64(stepCount) * strat.Increment
 
 		pt := HistoryPoint{
@@ -116,11 +153,15 @@ func (s *Service) GetHistory(id uuid.UUID, display string, rangeFrom time.Time, 
 			Target:     target,
 		}
 
-		price, ok, err := s.pricer.PriceAt(strat.Base, strat.Quote, d, staleness)
-		if err != nil {
-			return nil, err
+		var price float64
+		var priceOK bool
+		if baseOK {
+			price, priceOK, err = s.pricer.PriceAtRoute(baseRoute, d, staleness)
+			if err != nil {
+				return nil, err
+			}
 		}
-		if ok {
+		if priceOK {
 			actual := shares * price
 			pt.Actual = &actual
 			rec := recommended(strat, target, actual)
@@ -134,11 +175,9 @@ func (s *Service) GetHistory(id uuid.UUID, display string, rangeFrom time.Time, 
 			}
 		}
 
-		s.applyDisplay(&pt, strat, display, d, staleness)
+		s.applyDisplay(&pt, displaySame, displayRoute, d, staleness)
 
-		if rangeFrom.IsZero() || !d.Before(rangeFrom) {
-			points = append(points, pt)
-		}
+		points = append(points, pt)
 	}
 
 	return &History{StrategyID: id, Base: strat.Base, Quote: strat.Quote, Display: display, Points: points}, nil
@@ -241,12 +280,22 @@ func (s *Service) load(id uuid.UUID) (model.Strategy, []model.Transaction, error
 }
 
 // applyDisplay converts a point's quote values into the display currency using
-// the as-of quote→display rate at the point's date. If display == quote the
-// rate is 1; if the conversion edge is missing/stale the display fields stay nil.
-func (s *Service) applyDisplay(pt *HistoryPoint, strat model.Strategy, display string, d time.Time, staleness time.Duration) {
-	factor, ok := s.displayFactorAt(strat.Quote, display, d, staleness)
-	if !ok {
-		return
+// the as-of quote→display rate at the point's date, via an already-resolved
+// Route (displaySame true ⇒ rate is 1, no lookup). If the conversion is
+// missing/stale the display fields stay nil.
+func (s *Service) applyDisplay(pt *HistoryPoint, displaySame bool, displayRoute *pricing.Route, d time.Time, staleness time.Duration) {
+	var factor float64
+	if displaySame {
+		factor = 1
+	} else {
+		if displayRoute == nil {
+			return
+		}
+		f, ok, err := s.pricer.PriceAtRoute(displayRoute, d, staleness)
+		if err != nil || !ok {
+			return
+		}
+		factor = f
 	}
 	t := pt.Target * factor
 	pt.DisplayTarget = &t
@@ -279,17 +328,6 @@ func (s *Service) applySummaryDisplay(sum *Summary, strat model.Strategy, displa
 		v := *sum.NextRecommended * factor
 		sum.DisplayNextRecommended = &v
 	}
-}
-
-func (s *Service) displayFactorAt(quote, display string, d time.Time, staleness time.Duration) (float64, bool) {
-	if display == quote {
-		return 1, true
-	}
-	f, ok, err := s.pricer.PriceAt(quote, display, d, staleness)
-	if err != nil || !ok {
-		return 0, false
-	}
-	return f, true
 }
 
 func (s *Service) displayFactorLatest(quote, display string) (float64, bool) {
@@ -364,4 +402,39 @@ func generateDates(start time.Time, interval model.Interval, now time.Time) []ti
 		}
 	}
 	return out
+}
+
+// sampleDates returns the chart's date axis for [start, end], independent of
+// any strategy interval. When the span fits within maxPoints at daily
+// resolution, every day is returned. Otherwise points are evenly spaced by
+// day-count, with the first and last points pinned to start and end so the
+// series never looks truncated or stops short of "today". Both bounds are
+// normalized to UTC midnight so the result doesn't depend on the server
+// process's local timezone. Returns nil if start is after end (e.g. a
+// strategy that hasn't started yet).
+func sampleDates(start, end time.Time, maxPoints int) []time.Time {
+	if maxPoints < 2 {
+		maxPoints = 2
+	}
+	start = start.UTC().Truncate(24 * time.Hour)
+	end = end.UTC().Truncate(24 * time.Hour)
+	if start.After(end) {
+		return nil
+	}
+
+	totalDays := int(end.Sub(start) / (24 * time.Hour))
+	if totalDays+1 <= maxPoints {
+		out := make([]time.Time, 0, totalDays+1)
+		for d := start; !d.After(end); d = d.AddDate(0, 0, 1) {
+			out = append(out, d)
+		}
+		return out
+	}
+
+	step := (totalDays + maxPoints - 2) / (maxPoints - 1) // ceil(totalDays/(maxPoints-1))
+	out := make([]time.Time, 0, maxPoints)
+	for d := start; d.Before(end); d = d.AddDate(0, 0, step) {
+		out = append(out, d)
+	}
+	return append(out, end)
 }

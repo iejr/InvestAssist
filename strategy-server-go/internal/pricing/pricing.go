@@ -237,6 +237,47 @@ func (p *Pricer) ReachableQuotes(base string) ([]string, error) {
 // ErrNoRoute means base and quote are not connected by any edge in the feed.
 var ErrNoRoute = errors.New("pricing: no route between assets")
 
+// Route is a resolved base->quote hop sequence, reusable across many as-of
+// lookups. Resolving it once per request (instead of once per date) avoids
+// redundant HGETALL/BFS calls when a caller needs the same pair's price at
+// many different times.
+type Route struct {
+	path []hop
+}
+
+// ResolveRoute discovers the base->quote hop sequence from the current
+// latest_prices graph. ok is false when the two are not connected. The
+// returned Route carries no as-of data itself — it only fixes which edges to
+// walk; PriceAtRoute still reads price_candles per hop per date.
+func (p *Pricer) ResolveRoute(base, quote string) (route *Route, ok bool, err error) {
+	g, err := p.snapshot()
+	if err != nil {
+		return nil, false, err
+	}
+	path, connected := g.route(base, quote)
+	if !connected {
+		return nil, false, nil
+	}
+	return &Route{path: path}, true, nil
+}
+
+// PriceAtRoute is PriceAt using an already-resolved Route, skipping the
+// snapshot+BFS step. Use this when valuing the same pair at many dates.
+func (p *Pricer) PriceAtRoute(route *Route, t time.Time, maxStaleness time.Duration) (price float64, ok bool, err error) {
+	price = 1
+	for _, h := range route.path {
+		rate, hopOK, hErr := p.hopPriceAt(h, t, maxStaleness)
+		if hErr != nil {
+			return 0, false, hErr
+		}
+		if !hopOK {
+			return 0, false, nil
+		}
+		price *= rate
+	}
+	return price, true, nil
+}
+
 // LatestPrice returns the live price of 1 base in quote using latest_prices,
 // walking the shortest route. asOf is the freshest edge's timestamp along the
 // route (the oldest of the hops — i.e. the route is only as fresh as its
@@ -266,26 +307,11 @@ func (p *Pricer) LatestPrice(base, quote string) (price float64, asOf time.Time,
 // route) is reported missing (ok=false). A missing/absent candle for any hop
 // makes the whole route missing — prices are never fabricated.
 func (p *Pricer) PriceAt(base, quote string, t time.Time, maxStaleness time.Duration) (price float64, ok bool, err error) {
-	g, err := p.snapshot()
-	if err != nil {
+	route, ok, err := p.ResolveRoute(base, quote)
+	if err != nil || !ok {
 		return 0, false, err
 	}
-	path, connected := g.route(base, quote)
-	if !connected {
-		return 0, false, nil
-	}
-	price = 1
-	for _, h := range path {
-		rate, hopOK, hErr := p.hopPriceAt(h, t, maxStaleness)
-		if hErr != nil {
-			return 0, false, hErr
-		}
-		if !hopOK {
-			return 0, false, nil
-		}
-		price *= rate
-	}
-	return price, true, nil
+	return p.PriceAtRoute(route, t, maxStaleness)
 }
 
 // hopPriceAt fetches the as-of close for a single hop. It is granularity-
