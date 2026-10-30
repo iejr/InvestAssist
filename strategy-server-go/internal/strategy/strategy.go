@@ -84,10 +84,12 @@ type Summary struct {
 // GetHistory builds a value series for a strategy in the requested display
 // currency (empty ⇒ the strategy's own quote). The date axis is independent
 // of the strategy's contribution interval — it's a bounded, evenly-spaced
-// sample (see sampleDates), not one point per interval step. Target and
-// Recommended are still anchored to the strategy's own weekly/monthly cadence
-// (via a cheap, DB-free elapsed-step count), so VA/DCA math is unaffected by
-// how densely the chart itself is sampled.
+// sample (see sampleDates), not one point per interval step. Target is
+// computed via ExpectedTarget, which assumes linear growth between the
+// strategy's own weekly/monthly interval boundaries, so the chart doesn't
+// show a staircase just because its sample dates don't line up with the
+// contribution cadence. StepCount is still the raw discrete elapsed-step
+// count (DB-free, cheap) for callers that want the un-smoothed cadence.
 //
 // rangeFrom, if non-zero, narrows the sampled window itself (not a post-hoc
 // filter) so maxPoints resolution is spent inside the requested range rather
@@ -144,7 +146,7 @@ func (s *Service) GetHistory(id uuid.UUID, display string, rangeFrom time.Time, 
 			intervalIdx++
 		}
 		stepCount := intervalIdx
-		target := float64(stepCount) * strat.Increment
+		target := ExpectedTarget(strat.StartDate, strat.Interval, strat.Increment, d)
 
 		pt := HistoryPoint{
 			Date:       d,
@@ -387,6 +389,53 @@ func signedCost(t model.Transaction, strat model.Strategy) float64 {
 	default:
 		return 0
 	}
+}
+
+// ExpectedTarget returns the VA/DCA target portfolio value at an arbitrary
+// date d, assuming the target grows linearly between interval boundaries
+// instead of jumping by a full increment exactly at each one. It agrees with
+// the discrete step-count target (stepCount*increment) at every boundary
+// date — start, start+interval, start+2*interval, ... — and interpolates a
+// straight line in between, so a chart sampled at dates unrelated to the
+// strategy's own cadence (see sampleDates) doesn't show a staircase. Dates
+// before start return 0.
+func ExpectedTarget(start time.Time, interval model.Interval, increment float64, d time.Time) float64 {
+	if d.Before(start) {
+		return 0
+	}
+	step, prev, next := intervalBounds(start, interval, d)
+	var frac float64
+	if span := next.Sub(prev); span > 0 {
+		frac = d.Sub(prev).Seconds() / span.Seconds()
+	}
+	return (float64(step) + 1 + frac) * increment
+}
+
+// intervalBounds returns the number of whole interval steps elapsed strictly
+// before d (step), and the interval boundary immediately at-or-before d
+// (prev) and the next one after it (next). Assumes d is at-or-after start.
+func intervalBounds(start time.Time, interval model.Interval, d time.Time) (step int, prev, next time.Time) {
+	if interval == model.IntervalWeekly {
+		week := 7 * 24 * time.Hour
+		step = int(d.Sub(start) / week)
+		prev = start.Add(time.Duration(step) * week)
+		next = prev.Add(week)
+		return
+	}
+	// Monthly: calendar months vary in length, so estimate the elapsed
+	// month count from the calendar difference, then correct by a step or
+	// two — AddDate normalizes day overflow (e.g. Jan 31 + 1 month), which
+	// can throw the estimate off by one.
+	step = (d.Year()-start.Year())*12 + int(d.Month()) - int(start.Month())
+	for start.AddDate(0, step, 0).After(d) {
+		step--
+	}
+	for !start.AddDate(0, step+1, 0).After(d) {
+		step++
+	}
+	prev = start.AddDate(0, step, 0)
+	next = start.AddDate(0, step+1, 0)
+	return
 }
 
 // generateDates returns interval dates from start up to (and including) now.
