@@ -154,8 +154,9 @@ func (h *Handler) getHistory(c echo.Context) error {
 	display := strings.TrimSpace(c.QueryParam("display"))
 	now := h.now()
 	rangeFrom := parseRange(c.QueryParam("range"), now)
+	maxPoints := parseMaxPoints(c.QueryParam("max_points"))
 
-	hist, err := h.svc.GetHistory(id, display, rangeFrom, now)
+	hist, err := h.svc.GetHistory(id, display, rangeFrom, now, maxPoints)
 	if err != nil {
 		return notFoundOrErr(c, err)
 	}
@@ -283,6 +284,35 @@ func parseRange(s string, now time.Time) time.Time {
 	default:
 		return time.Time{}
 	}
+}
+
+// defaultMaxPoints/minMaxPoints/maxMaxPoints bound the ?max_points= override
+// on GET history: a sane default, a hard floor so step math stays sane, and a
+// hard ceiling so a client can't force an unbounded series.
+const (
+	defaultMaxPoints = 50
+	minMaxPoints     = 2
+	maxMaxPoints     = 500
+)
+
+// parseMaxPoints parses ?max_points=, clamping to [minMaxPoints, maxMaxPoints].
+// Empty or invalid ⇒ defaultMaxPoints.
+func parseMaxPoints(s string) int {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return defaultMaxPoints
+	}
+	n, err := strconv.Atoi(s)
+	if err != nil {
+		return defaultMaxPoints
+	}
+	if n < minMaxPoints {
+		return minMaxPoints
+	}
+	if n > maxMaxPoints {
+		return maxMaxPoints
+	}
+	return n
 }
 
 func contains(xs []string, x string) bool {
