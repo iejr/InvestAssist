@@ -3,6 +3,8 @@ package strategy
 import (
 	"testing"
 	"time"
+
+	"strategy-server-go/internal/model"
 )
 
 func day(y int, m time.Month, d int) time.Time {
@@ -75,6 +77,75 @@ func TestSampleDates_MaxPointsBelowTwo_ClampsToTwo(t *testing.T) {
 	}
 	if !got[0].Equal(start) || !got[1].Equal(end) {
 		t.Fatalf("got %v, want [%v, %v]", got, start, end)
+	}
+}
+
+func TestExpectedTarget_BeforeStart_IsZero(t *testing.T) {
+	start := day(2026, 1, 8)
+	got := ExpectedTarget(start, model.IntervalWeekly, 100, day(2026, 1, 1))
+	if got != 0 {
+		t.Fatalf("got %v, want 0", got)
+	}
+}
+
+func TestExpectedTarget_Weekly_AgreesWithStepFunctionAtBoundaries(t *testing.T) {
+	start := day(2026, 1, 1)
+	cases := []struct {
+		d    time.Time
+		want float64
+	}{
+		{day(2026, 1, 1), 100},  // start: 1st step already due
+		{day(2026, 1, 8), 200},  // 2nd boundary
+		{day(2026, 1, 15), 300}, // 3rd boundary
+	}
+	for _, c := range cases {
+		got := ExpectedTarget(start, model.IntervalWeekly, 100, c.d)
+		if got != c.want {
+			t.Fatalf("ExpectedTarget(%v) = %v, want %v", c.d, got, c.want)
+		}
+	}
+}
+
+func TestExpectedTarget_Weekly_InterpolatesLinearlyMidInterval(t *testing.T) {
+	start := day(2026, 1, 1)
+	// 3 of the 7 days into the first week (dates are day-aligned, so the
+	// elapsed fraction is computed in whole days, not sub-day durations).
+	d := start.AddDate(0, 0, 3)
+	got := ExpectedTarget(start, model.IntervalWeekly, 100, d)
+	want := (1 + 3.0/7.0) * 100.0
+	if diff := got - want; diff > 1e-9 || diff < -1e-9 {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+}
+
+func TestExpectedTarget_Weekly_MonotonicNoJumpBackwards(t *testing.T) {
+	start := day(2026, 1, 1)
+	prev := ExpectedTarget(start, model.IntervalWeekly, 100, start)
+	for i := 1; i <= 30; i++ {
+		d := start.AddDate(0, 0, i)
+		got := ExpectedTarget(start, model.IntervalWeekly, 100, d)
+		if got < prev {
+			t.Fatalf("target decreased at day %d: %v -> %v", i, prev, got)
+		}
+		prev = got
+	}
+}
+
+func TestExpectedTarget_Monthly_AgreesWithStepFunctionAtBoundaries(t *testing.T) {
+	start := day(2026, 1, 31) // exercises AddDate day-overflow normalization
+	cases := []struct {
+		d    time.Time
+		want float64
+	}{
+		{day(2026, 1, 31), 50},
+		{day(2026, 3, 3), 100}, // Feb 31 normalizes to Mar 3
+		{day(2026, 3, 31), 150},
+	}
+	for _, c := range cases {
+		got := ExpectedTarget(start, model.IntervalMonthly, 50, c.d)
+		if got != c.want {
+			t.Fatalf("ExpectedTarget(%v) = %v, want %v", c.d, got, c.want)
+		}
 	}
 }
 
