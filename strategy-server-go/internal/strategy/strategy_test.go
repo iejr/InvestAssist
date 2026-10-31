@@ -108,10 +108,11 @@ func TestExpectedTarget_Weekly_AgreesWithStepFunctionAtBoundaries(t *testing.T) 
 
 func TestExpectedTarget_Weekly_InterpolatesLinearlyMidInterval(t *testing.T) {
 	start := day(2026, 1, 1)
-	// Midpoint between the Jan 1 (100) and Jan 8 (200) boundaries.
-	mid := start.Add(3*24*time.Hour + 12*time.Hour)
-	got := ExpectedTarget(start, model.IntervalWeekly, 100, mid)
-	want := 150.0
+	// 3 of the 7 days into the first week (dates are day-aligned, so the
+	// elapsed fraction is computed in whole days, not sub-day durations).
+	d := start.AddDate(0, 0, 3)
+	got := ExpectedTarget(start, model.IntervalWeekly, 100, d)
+	want := (1 + 3.0/7.0) * 100.0
 	if diff := got - want; diff > 1e-9 || diff < -1e-9 {
 		t.Fatalf("got %v, want %v", got, want)
 	}

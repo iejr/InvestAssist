@@ -89,7 +89,8 @@ type Summary struct {
 // strategy's own weekly/monthly interval boundaries, so the chart doesn't
 // show a staircase just because its sample dates don't line up with the
 // contribution cadence. StepCount is still the raw discrete elapsed-step
-// count (DB-free, cheap) for callers that want the un-smoothed cadence.
+// count (DB-free, cheap) for callers that want the un-smoothed cadence; it
+// agrees with Target/Increment at every boundary date.
 //
 // rangeFrom, if non-zero, narrows the sampled window itself (not a post-hoc
 // filter) so maxPoints resolution is spent inside the requested range rather
@@ -392,23 +393,36 @@ func signedCost(t model.Transaction, strat model.Strategy) float64 {
 }
 
 // ExpectedTarget returns the VA/DCA target portfolio value at an arbitrary
-// date d, assuming the target grows linearly between interval boundaries
-// instead of jumping by a full increment exactly at each one. It agrees with
-// the discrete step-count target (stepCount*increment) at every boundary
-// date — start, start+interval, start+2*interval, ... — and interpolates a
-// straight line in between, so a chart sampled at dates unrelated to the
-// strategy's own cadence (see sampleDates) doesn't show a staircase. Dates
+// date d, modeled as a straight line expected = grad*(d-start) + b: grad is
+// increment/interval-length and b is the value already due at the
+// strategy's own start date. b is one full increment — the user is assumed
+// to invest immediately at start rather than wait a full cycle — so the
+// line reads increment at start, 2*increment at start+1*interval, and so
+// on, agreeing with the discrete step-count target (stepCount*increment) at
+// every boundary while interpolating linearly in between. Every date in
+// this system is day-aligned (see sampleDates), so growth is computed in
+// whole days — increment is multiplied by the elapsed day count before
+// dividing by the period's day length, rather than pre-dividing into a
+// per-day rate, to avoid losing precision in that intermediate ratio. Dates
 // before start return 0.
 func ExpectedTarget(start time.Time, interval model.Interval, increment float64, d time.Time) float64 {
 	if d.Before(start) {
 		return 0
 	}
 	step, prev, next := intervalBounds(start, interval, d)
+	totalDays := daysBetween(prev, next)
+	elapsedDays := daysBetween(prev, d)
 	var frac float64
-	if span := next.Sub(prev); span > 0 {
-		frac = d.Sub(prev).Seconds() / span.Seconds()
+	if totalDays > 0 {
+		frac = float64(elapsedDays) / float64(totalDays)
 	}
-	return (float64(step) + 1 + frac) * increment
+	const b = 1 // one full increment already due at start
+	return (float64(step) + b + frac) * increment
+}
+
+// daysBetween returns the whole number of days from a to b.
+func daysBetween(a, b time.Time) int {
+	return int(b.Sub(a) / (24 * time.Hour))
 }
 
 // intervalBounds returns the number of whole interval steps elapsed strictly
@@ -416,10 +430,9 @@ func ExpectedTarget(start time.Time, interval model.Interval, increment float64,
 // (prev) and the next one after it (next). Assumes d is at-or-after start.
 func intervalBounds(start time.Time, interval model.Interval, d time.Time) (step int, prev, next time.Time) {
 	if interval == model.IntervalWeekly {
-		week := 7 * 24 * time.Hour
-		step = int(d.Sub(start) / week)
-		prev = start.Add(time.Duration(step) * week)
-		next = prev.Add(week)
+		step = daysBetween(start, d) / 7
+		prev = start.AddDate(0, 0, step*7)
+		next = prev.AddDate(0, 0, 7)
 		return
 	}
 	// Monthly: calendar months vary in length, so estimate the elapsed
