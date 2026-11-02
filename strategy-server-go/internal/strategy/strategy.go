@@ -1,12 +1,20 @@
 // Package strategy holds the VA/DCA valuation math. Everything is computed in
-// the strategy's QUOTE (accounting) currency; a display currency, if different,
-// is applied only as a presentation conversion (Decision D).
+// the strategy's QUOTE (accounting) currency, using money.Money (an exact
+// decimal, not float64) for every value this service owns outright; a
+// display currency, if different, is applied only as a presentation
+// conversion (Decision D). Strategy-type-specific behavior (the recommended-
+// contribution rule, and any auxiliary curves like VA's target) is isolated
+// behind the Plan interface (see plan.go) — everything else here (actual
+// portfolio value, invested amount, date sampling) is universal and never
+// branches on Strategy.Type.
 package strategy
 
 import (
+	"sort"
 	"time"
 
 	"strategy-server-go/internal/model"
+	"strategy-server-go/internal/money"
 	"strategy-server-go/internal/pricing"
 
 	"github.com/google/uuid"
@@ -28,22 +36,31 @@ func New(db *gorm.DB, pricer *pricing.Pricer, stalenessOverride time.Duration) *
 	return &Service{db: db, pricer: pricer, stalenessOverride: stalenessOverride}
 }
 
-// HistoryPoint is one interval date's valuation. Canonical numeric fields are in
-// the strategy's quote currency; Display* mirrors are in the requested display
-// currency (nil when the display conversion is missing at that date). Missing is
-// true when the base/quote price itself is unavailable at the date.
+// SeriesMeta describes one named series found in HistoryPoint.Values, so a
+// caller (the UI) can render every curve a strategy exposes without
+// hardcoding which strategy types expose which keys. "actual", "invested"
+// and "recommended_contribution" are always present (universal or
+// type-determined-but-always-answered); any further entries come from the
+// strategy's own Plan.ExtraLabels (e.g. VA's "target").
+type SeriesMeta struct {
+	Key   string `json:"key"`
+	Label string `json:"label"`
+}
+
+// HistoryPoint is one sampled date's valuation. Values holds every curve at
+// this point, keyed by SeriesMeta.Key, in the strategy's quote currency; a
+// key's absence (rather than a null) means that value is unknown at this
+// point (e.g. "actual" and "recommended_contribution" are absent when the
+// price itself is missing). DisplayValues mirrors Values in the requested
+// display currency, absent entirely when that conversion itself is
+// unavailable at this date.
 type HistoryPoint struct {
-	Date       time.Time `json:"date"`
-	StepCount  int       `json:"step_count"`
-	SharesHeld float64   `json:"shares_held"`
+	Date       time.Time   `json:"date"`
+	StepCount  int         `json:"step_count"`
+	SharesHeld money.Money `json:"shares_held"`
 
-	Target      float64  `json:"target"`                   // quote units
-	Actual      *float64 `json:"actual"`                   // quote units; nil ⇒ price missing
-	Recommended *float64 `json:"recommended_contribution"` // quote units; nil ⇒ price missing (VA)
-
-	DisplayTarget      *float64 `json:"display_target"`
-	DisplayActual      *float64 `json:"display_actual"`
-	DisplayRecommended *float64 `json:"display_recommended_contribution"`
+	Values        map[string]money.Money `json:"values"`
+	DisplayValues map[string]money.Money `json:"display_values,omitempty"`
 
 	Missing bool `json:"missing"`
 }
@@ -54,29 +71,24 @@ type History struct {
 	Base       string         `json:"base"`
 	Quote      string         `json:"quote"`
 	Display    string         `json:"display"`
+	Series     []SeriesMeta   `json:"series"`
 	Points     []HistoryPoint `json:"points"`
 }
 
-// Summary is the headline panel: latest target vs actual plus the next
-// recommended contribution. Current value uses live latest_prices.
+// Summary is the headline panel: current value vs invested, gain/loss, plus
+// the next recommended contribution and any strategy-specific extras (e.g.
+// VA's latest target). Same Values/DisplayValues absence-means-unknown
+// convention as HistoryPoint.
 type Summary struct {
 	StrategyID uuid.UUID `json:"strategy_id"`
 	Base       string    `json:"base"`
 	Quote      string    `json:"quote"`
 	Display    string    `json:"display"`
 
-	SharesHeld      float64  `json:"shares_held"`
-	Target          float64  `json:"target"`                        // latest interval target, quote
-	Actual          *float64 `json:"actual"`                        // latest interval actual (candle), quote
-	CurrentValue    *float64 `json:"current_value"`                 // live value from latest_prices, quote
-	TotalInvested   float64  `json:"total_invested"`                // quote
-	GainLoss        *float64 `json:"gain_loss"`                     // current_value - invested, quote
-	NextRecommended *float64 `json:"next_recommended_contribution"` // quote
+	SharesHeld money.Money `json:"shares_held"`
 
-	DisplayCurrentValue    *float64 `json:"display_current_value"`
-	DisplayTotalInvested   *float64 `json:"display_total_invested"`
-	DisplayGainLoss        *float64 `json:"display_gain_loss"`
-	DisplayNextRecommended *float64 `json:"display_next_recommended_contribution"`
+	Values        map[string]money.Money `json:"values"`
+	DisplayValues map[string]money.Money `json:"display_values,omitempty"`
 
 	PriceStale bool `json:"price_stale"` // true when the live edge has no route/price
 }
@@ -84,13 +96,13 @@ type Summary struct {
 // GetHistory builds a value series for a strategy in the requested display
 // currency (empty ⇒ the strategy's own quote). The date axis is independent
 // of the strategy's contribution interval — it's a bounded, evenly-spaced
-// sample (see sampleDates), not one point per interval step. Target is
-// computed via ExpectedTarget, which assumes linear growth between the
-// strategy's own weekly/monthly interval boundaries, so the chart doesn't
-// show a staircase just because its sample dates don't line up with the
-// contribution cadence. StepCount is still the raw discrete elapsed-step
-// count (DB-free, cheap) for callers that want the un-smoothed cadence; it
-// agrees with Target/Increment at every boundary date.
+// sample (see sampleDates), not one point per interval step. Any VA/DCA
+// target curve comes from the strategy's own Plan (see plan.go), which
+// assumes linear growth between the strategy's own weekly/monthly interval
+// boundaries, so the chart doesn't show a staircase just because its sample
+// dates don't line up with the contribution cadence. StepCount is still the
+// raw discrete elapsed-step count (DB-free, cheap) for callers that want the
+// un-smoothed cadence.
 //
 // rangeFrom, if non-zero, narrows the sampled window itself (not a post-hoc
 // filter) so maxPoints resolution is spent inside the requested range rather
@@ -106,9 +118,10 @@ func (s *Service) GetHistory(id uuid.UUID, display string, rangeFrom time.Time, 
 		display = strat.Quote
 	}
 	staleness := s.maxStaleness(strat)
+	plan := NewPlan(strat)
 
-	// Pure date math (no DB/pricing calls) — anchors Target/Recommended to
-	// the strategy's own cadence independent of the chart's sample dates.
+	// Pure date math (no DB/pricing calls) — StepCount's cadence, independent
+	// of the chart's sample dates.
 	intervalDates := generateDates(strat.StartDate, strat.Interval, now)
 
 	effectiveStart := strat.StartDate
@@ -133,12 +146,14 @@ func (s *Service) GetHistory(id uuid.UUID, display string, rangeFrom time.Time, 
 	points := make([]HistoryPoint, 0, len(dates))
 	txIdx := 0
 	intervalIdx := 0
-	var shares float64
+	shares := money.Zero
+	invested := money.Zero
 
 	for _, d := range dates {
 		// Fold in every transaction executed at-or-before this date.
 		for txIdx < len(txs) && !txs[txIdx].Timestamp.After(d) {
-			shares += signedShares(txs[txIdx], strat)
+			shares = shares.Add(signedShares(txs[txIdx], strat))
+			invested = invested.Add(signedCost(txs[txIdx], strat))
 			txIdx++
 		}
 		// Elapsed interval steps as-of this date — independent of whether d
@@ -146,14 +161,12 @@ func (s *Service) GetHistory(id uuid.UUID, display string, rangeFrom time.Time, 
 		for intervalIdx < len(intervalDates) && !intervalDates[intervalIdx].After(d) {
 			intervalIdx++
 		}
-		stepCount := intervalIdx
-		target := ExpectedTarget(strat.StartDate, strat.Interval, strat.Increment, d)
 
 		pt := HistoryPoint{
 			Date:       d,
-			StepCount:  stepCount,
+			StepCount:  intervalIdx,
 			SharesHeld: shares,
-			Target:     target,
+			Values:     map[string]money.Money{"invested": invested},
 		}
 
 		var price float64
@@ -164,18 +177,19 @@ func (s *Service) GetHistory(id uuid.UUID, display string, rangeFrom time.Time, 
 				return nil, err
 			}
 		}
+		var actual *money.Money
 		if priceOK {
-			actual := shares * price
-			pt.Actual = &actual
-			rec := recommended(strat, target, actual)
-			pt.Recommended = &rec
+			a := money.FromPrice(price).Mul(shares)
+			actual = &a
+			pt.Values["actual"] = a
 		} else {
 			pt.Missing = true
-			// DCA's recommended contribution is fixed and doesn't need a price.
-			if strat.Type == model.StrategyTypeDCA {
-				rec := strat.Increment
-				pt.Recommended = &rec
-			}
+		}
+		if rec, ok := plan.Recommended(d, actual); ok {
+			pt.Values["recommended_contribution"] = rec
+		}
+		for k, v := range plan.Extras(d) {
+			pt.Values[k] = v
 		}
 
 		s.applyDisplay(&pt, displaySame, displayRoute, d, staleness)
@@ -183,11 +197,19 @@ func (s *Service) GetHistory(id uuid.UUID, display string, rangeFrom time.Time, 
 		points = append(points, pt)
 	}
 
-	return &History{StrategyID: id, Base: strat.Base, Quote: strat.Quote, Display: display, Points: points}, nil
+	return &History{
+		StrategyID: id,
+		Base:       strat.Base,
+		Quote:      strat.Quote,
+		Display:    display,
+		Series:     buildSeries(plan.ExtraLabels()),
+		Points:     points,
+	}, nil
 }
 
-// GetSummary builds the headline panel using live latest_prices for the current
-// value and the latest interval point for target/actual.
+// GetSummary builds the headline panel using live latest_prices for the
+// current value and the strategy's own Plan for the next recommended
+// contribution and any extras.
 func (s *Service) GetSummary(id uuid.UUID, display string, now time.Time) (*Summary, error) {
 	strat, txs, err := s.load(id)
 	if err != nil {
@@ -196,29 +218,26 @@ func (s *Service) GetSummary(id uuid.UUID, display string, now time.Time) (*Summ
 	if display == "" {
 		display = strat.Quote
 	}
+	plan := NewPlan(strat)
 
-	dates := generateDates(strat.StartDate, strat.Interval, now)
-
-	var sharesNow, invested float64
+	sharesNow := money.Zero
+	invested := money.Zero
 	for _, t := range txs {
-		sharesNow += signedShares(t, strat)
-		invested += signedCost(t, strat)
+		sharesNow = sharesNow.Add(signedShares(t, strat))
+		invested = invested.Add(signedCost(t, strat))
 	}
 
 	sum := &Summary{
-		StrategyID:    id,
-		Base:          strat.Base,
-		Quote:         strat.Quote,
-		Display:       display,
-		SharesHeld:    sharesNow,
-		TotalInvested: invested,
+		StrategyID: id,
+		Base:       strat.Base,
+		Quote:      strat.Quote,
+		Display:    display,
+		SharesHeld: sharesNow,
+		Values:     map[string]money.Money{"total_invested": invested},
 	}
-
-	stepCount := len(dates)
-	if stepCount == 0 {
-		stepCount = 1 // strategy starts in the future: first step is still ahead.
+	for k, v := range plan.Extras(now) {
+		sum.Values[k] = v
 	}
-	sum.Target = float64(stepCount) * strat.Increment
 
 	// Live current value from latest_prices (not candles).
 	price, _, ok, err := s.pricer.LatestPrice(strat.Base, strat.Quote)
@@ -226,26 +245,16 @@ func (s *Service) GetSummary(id uuid.UUID, display string, now time.Time) (*Summ
 		return nil, err
 	}
 	if ok {
-		cv := sharesNow * price
-		sum.CurrentValue = &cv
-		sum.Actual = &cv // latest actual == live value
-		gl := cv - invested
-		sum.GainLoss = &gl
-
-		// Next recommended contribution tops up to the NEXT interval target.
-		nextTarget := float64(stepCount+1) * strat.Increment
-		var rec float64
-		if strat.Type == model.StrategyTypeVA {
-			rec = nextTarget - cv
-		} else {
-			rec = strat.Increment
+		cv := money.FromPrice(price).Mul(sharesNow)
+		sum.Values["current_value"] = cv
+		sum.Values["gain_loss"] = cv.Sub(invested)
+		if rec, recOK := plan.NextRecommended(now, &cv); recOK {
+			sum.Values["next_recommended_contribution"] = rec
 		}
-		sum.NextRecommended = &rec
 	} else {
 		sum.PriceStale = true
-		if strat.Type == model.StrategyTypeDCA {
-			rec := strat.Increment
-			sum.NextRecommended = &rec
+		if rec, recOK := plan.NextRecommended(now, nil); recOK {
+			sum.Values["next_recommended_contribution"] = rec
 		}
 	}
 
@@ -282,14 +291,34 @@ func (s *Service) load(id uuid.UUID) (model.Strategy, []model.Transaction, error
 	return strat, txs, nil
 }
 
-// applyDisplay converts a point's quote values into the display currency using
-// the as-of quote→display rate at the point's date, via an already-resolved
-// Route (displaySame true ⇒ rate is 1, no lookup). If the conversion is
-// missing/stale the display fields stay nil.
+// buildSeries is History's series manifest: the universal/always-answered
+// keys, followed by the strategy's own extras (if any), key-sorted for a
+// stable, deterministic order.
+func buildSeries(extra map[string]string) []SeriesMeta {
+	series := []SeriesMeta{
+		{Key: "actual", Label: "Actual"},
+		{Key: "invested", Label: "Invested"},
+		{Key: "recommended_contribution", Label: "Recommended Contribution"},
+	}
+	keys := make([]string, 0, len(extra))
+	for k := range extra {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		series = append(series, SeriesMeta{Key: k, Label: extra[k]})
+	}
+	return series
+}
+
+// applyDisplay converts a point's quote-currency Values into the display
+// currency using the as-of quote→display rate at the point's date, via an
+// already-resolved Route (displaySame true ⇒ rate is 1, no lookup). If the
+// conversion is missing/stale, DisplayValues stays nil (absent in JSON).
 func (s *Service) applyDisplay(pt *HistoryPoint, displaySame bool, displayRoute *pricing.Route, d time.Time, staleness time.Duration) {
-	var factor float64
+	var factor money.Money
 	if displaySame {
-		factor = 1
+		factor = money.FromInt(1)
 	} else {
 		if displayRoute == nil {
 			return
@@ -298,18 +327,13 @@ func (s *Service) applyDisplay(pt *HistoryPoint, displaySame bool, displayRoute 
 		if err != nil || !ok {
 			return
 		}
-		factor = f
+		factor = money.FromPrice(f)
 	}
-	t := pt.Target * factor
-	pt.DisplayTarget = &t
-	if pt.Actual != nil {
-		v := *pt.Actual * factor
-		pt.DisplayActual = &v
+	dv := make(map[string]money.Money, len(pt.Values))
+	for k, v := range pt.Values {
+		dv[k] = v.Mul(factor)
 	}
-	if pt.Recommended != nil {
-		v := *pt.Recommended * factor
-		pt.DisplayRecommended = &v
-	}
+	pt.DisplayValues = dv
 }
 
 func (s *Service) applySummaryDisplay(sum *Summary, strat model.Strategy, display string) {
@@ -317,31 +341,22 @@ func (s *Service) applySummaryDisplay(sum *Summary, strat model.Strategy, displa
 	if !ok {
 		return
 	}
-	if sum.CurrentValue != nil {
-		v := *sum.CurrentValue * factor
-		sum.DisplayCurrentValue = &v
+	dv := make(map[string]money.Money, len(sum.Values))
+	for k, v := range sum.Values {
+		dv[k] = v.Mul(factor)
 	}
-	inv := sum.TotalInvested * factor
-	sum.DisplayTotalInvested = &inv
-	if sum.GainLoss != nil {
-		v := *sum.GainLoss * factor
-		sum.DisplayGainLoss = &v
-	}
-	if sum.NextRecommended != nil {
-		v := *sum.NextRecommended * factor
-		sum.DisplayNextRecommended = &v
-	}
+	sum.DisplayValues = dv
 }
 
-func (s *Service) displayFactorLatest(quote, display string) (float64, bool) {
+func (s *Service) displayFactorLatest(quote, display string) (money.Money, bool) {
 	if display == quote {
-		return 1, true
+		return money.FromInt(1), true
 	}
 	f, _, ok, err := s.pricer.LatestPrice(quote, display)
 	if err != nil || !ok {
-		return 0, false
+		return money.Zero, false
 	}
-	return f, true
+	return money.FromPrice(f), true
 }
 
 // maxStaleness is one interval-step by default (weekly ⇒ ~1 week, monthly ⇒
@@ -356,39 +371,31 @@ func (s *Service) maxStaleness(strat model.Strategy) time.Duration {
 	return 31 * 24 * time.Hour
 }
 
-// recommended is the VA/DCA contribution in quote units for a computed point.
-func recommended(strat model.Strategy, target, actual float64) float64 {
-	if strat.Type == model.StrategyTypeVA {
-		return target - actual // negative ⇒ sell
-	}
-	return strat.Increment
-}
-
 // signedShares is the strategy's base asset moved by a transaction: positive
 // when base was gained (bought), negative when base was spent (sold). A
 // transaction touching neither side of strat.Base contributes nothing.
-func signedShares(t model.Transaction, strat model.Strategy) float64 {
+func signedShares(t model.Transaction, strat model.Strategy) money.Money {
 	switch {
 	case t.GainedSymbol == strat.Base:
 		return t.GainedAmount
 	case t.SpentSymbol == strat.Base:
-		return -t.SpentAmount
+		return t.SpentAmount.Neg()
 	default:
-		return 0
+		return money.Zero
 	}
 }
 
 // signedCost is the quote cash moved by a transaction (naive: proceeds from
 // a sale reduce basis directly — a noted v1 limitation). A transaction
 // touching neither side of strat.Quote contributes nothing.
-func signedCost(t model.Transaction, strat model.Strategy) float64 {
+func signedCost(t model.Transaction, strat model.Strategy) money.Money {
 	switch {
 	case t.SpentSymbol == strat.Quote:
 		return t.SpentAmount
 	case t.GainedSymbol == strat.Quote:
-		return -t.GainedAmount
+		return t.GainedAmount.Neg()
 	default:
-		return 0
+		return money.Zero
 	}
 }
 
@@ -405,19 +412,19 @@ func signedCost(t model.Transaction, strat model.Strategy) float64 {
 // dividing by the period's day length, rather than pre-dividing into a
 // per-day rate, to avoid losing precision in that intermediate ratio. Dates
 // before start return 0.
-func ExpectedTarget(start time.Time, interval model.Interval, increment float64, d time.Time) float64 {
+func ExpectedTarget(start time.Time, interval model.Interval, increment money.Money, d time.Time) money.Money {
 	if d.Before(start) {
-		return 0
+		return money.Zero
 	}
 	step, prev, next := intervalBounds(start, interval, d)
 	totalDays := daysBetween(prev, next)
 	elapsedDays := daysBetween(prev, d)
-	var frac float64
-	if totalDays > 0 {
-		frac = float64(elapsedDays) / float64(totalDays)
+	whole := increment.Mul(money.FromInt(step + 1)) // step + b, b = 1
+	if totalDays <= 0 {
+		return whole
 	}
-	const b = 1 // one full increment already due at start
-	return (float64(step) + b + frac) * increment
+	frac := increment.Mul(money.FromInt(elapsedDays)).Div(money.FromInt(totalDays))
+	return whole.Add(frac)
 }
 
 // daysBetween returns the whole number of days from a to b.

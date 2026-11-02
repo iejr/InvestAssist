@@ -20,6 +20,13 @@ import {
 
 ChartJS.register(LineElement, CategoryScale, LinearScale, PointElement, Tooltip, Legend);
 
+// The summary panel has a small, fixed set of KPI tiles with hand-written
+// labels; any further key a strategy's Plan adds (e.g. VA's "target") is
+// rendered generically below them from its key name, so no UI change is
+// needed when a new strategy type adds its own summary extra.
+const KNOWN_SUMMARY_KEYS = ['current_value', 'total_invested', 'gain_loss', 'next_recommended_contribution'];
+const humanize = (key: string) => key.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+
 export default function StrategyDetail() {
   const { id } = useParams();
   const [strategy, setStrategy] = useState<Strategy | null>(null);
@@ -83,30 +90,38 @@ export default function StrategyDetail() {
     refresh();
   };
 
-  // Chart uses display-converted values, falling back to quote values.
+  // Chart renders every series the backend reports (history.series), not a
+  // hardcoded pair — a strategy type can expose its own curves (e.g. VA's
+  // "target") without any UI change. Values are decimal strings; parse only
+  // for display, never for further arithmetic. display_values, when
+  // present, take priority over the quote-currency values.
+  const parseValue = (v: string | undefined): number | null => (v == null ? null : parseFloat(v));
+
   const points = history?.points ?? [];
+  const series = history?.series ?? [];
+  const palette = [
+    'rgb(34, 197, 94)',
+    'rgb(59, 130, 246)',
+    'rgb(234, 179, 8)',
+    'rgb(236, 72, 153)',
+  ];
   const chartData = {
     labels: points.map((p) => p.date.slice(0, 10)),
-    datasets: [
-      {
-        label: `Target (${display})`,
-        data: points.map((p) => p.display_target ?? p.target),
-        borderColor: 'rgb(34, 197, 94)',
-        backgroundColor: 'rgba(34, 197, 94, 0.3)',
+    datasets: series.map((s, i) => {
+      const color = palette[i % palette.length];
+      return {
+        label: `${s.label} (${display})`,
+        data: points.map((p) => parseValue(p.display_values?.[s.key] ?? p.values[s.key])),
+        borderColor: color,
+        backgroundColor: color.replace('rgb', 'rgba').replace(')', ', 0.3)'),
         tension: 0.3,
-      },
-      {
-        label: `Actual (${display})`,
-        data: points.map((p) => p.display_actual ?? p.actual),
-        borderColor: 'rgb(59, 130, 246)',
-        backgroundColor: 'rgba(59, 130, 246, 0.3)',
-        tension: 0.3,
-      },
-    ],
+        spanGaps: true,
+      };
+    }),
   };
 
-  const money = (v: number | null | undefined) =>
-    v == null ? '—' : `${v.toFixed(2)} ${display}`;
+  const money = (v: string | undefined) =>
+    v == null ? '—' : `${parseFloat(v).toFixed(2)} ${display}`;
 
   return (
     <div className="p-4 max-w-4xl mx-auto space-y-6">
@@ -132,13 +147,26 @@ export default function StrategyDetail() {
 
       {summary && (
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
-          <Stat label="Current Value" value={money(summary.display_current_value ?? summary.current_value)} />
-          <Stat label="Total Invested" value={money(summary.display_total_invested ?? summary.total_invested)} />
-          <Stat label="Gain / Loss" value={money(summary.display_gain_loss ?? summary.gain_loss)} />
+          <Stat
+            label="Current Value"
+            value={money(summary.display_values?.current_value ?? summary.values.current_value)}
+          />
+          <Stat
+            label="Total Invested"
+            value={money(summary.display_values?.total_invested ?? summary.values.total_invested)}
+          />
+          <Stat label="Gain / Loss" value={money(summary.display_values?.gain_loss ?? summary.values.gain_loss)} />
           <Stat
             label="Next Recommended"
-            value={money(summary.display_next_recommended_contribution ?? summary.next_recommended_contribution)}
+            value={money(
+              summary.display_values?.next_recommended_contribution ?? summary.values.next_recommended_contribution,
+            )}
           />
+          {Object.keys(summary.values)
+            .filter((k) => !KNOWN_SUMMARY_KEYS.includes(k))
+            .map((k) => (
+              <Stat key={k} label={humanize(k)} value={money(summary.display_values?.[k] ?? summary.values[k])} />
+            ))}
           {summary.price_stale && (
             <p className="col-span-full text-amber-600">
               Live price unavailable for {summary.base}/{summary.quote} — value may be stale.

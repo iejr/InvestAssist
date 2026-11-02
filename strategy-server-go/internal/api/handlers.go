@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"strategy-server-go/internal/model"
+	"strategy-server-go/internal/money"
 	"strategy-server-go/internal/pricing"
 	"strategy-server-go/internal/strategy"
 
@@ -88,7 +89,7 @@ type createStrategyReq struct {
 	Quote     string             `json:"quote"`
 	StartDate string             `json:"start_date"`
 	Interval  model.Interval     `json:"interval"`
-	Increment float64            `json:"increment"`
+	Increment money.Money        `json:"increment"`
 }
 
 func (h *Handler) createStrategy(c echo.Context) error {
@@ -207,13 +208,13 @@ func (h *Handler) listTransactions(c echo.Context) error {
 
 // createTransactionReq is the record-transaction body.
 type createTransactionReq struct {
-	StrategyID   string  `json:"strategy_id"`
-	SpentSymbol  string  `json:"spent_symbol"`
-	SpentAmount  float64 `json:"spent_amount"`
-	GainedSymbol string  `json:"gained_symbol"`
-	GainedAmount float64 `json:"gained_amount"`
-	Memo         string  `json:"memo"`
-	Timestamp    string  `json:"timestamp"`
+	StrategyID   string      `json:"strategy_id"`
+	SpentSymbol  string      `json:"spent_symbol"`
+	SpentAmount  money.Money `json:"spent_amount"`
+	GainedSymbol string      `json:"gained_symbol"`
+	GainedAmount money.Money `json:"gained_amount"`
+	Memo         string      `json:"memo"`
+	Timestamp    string      `json:"timestamp"`
 }
 
 func (h *Handler) createTransaction(c echo.Context) error {
