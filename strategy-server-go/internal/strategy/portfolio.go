@@ -1,6 +1,7 @@
 package strategy
 
 import (
+	"log"
 	"time"
 
 	"strategy-server-go/internal/model"
@@ -15,6 +16,13 @@ import (
 // in each type; VA and DCA (see va.go, dca.go) each compose a portfolio by
 // value and layer only their own contribution-rule math on top of what it
 // returns.
+//
+// base is matched exactly (see signedShares): it names one specific asset,
+// so a different asset is never folded into its share count no matter how
+// it's denominated. quote is NOT matched exactly for cost purposes (see
+// costConverter): a transaction's cash leg is still cash even when it's in
+// a different, but convertible, currency (e.g. paying in USDC for a
+// USDT-quoted strategy) — that's converted via the pricer, not ignored.
 type portfolio struct {
 	pricer *pricing.Pricer
 
@@ -25,7 +33,13 @@ type portfolio struct {
 
 	txs []model.Transaction
 
-	staleness time.Duration
+	staleness time.Duration // max price age for valuing the strategy's own base/quote and display conversions
+	// txStaleness bounds how old a price may be when converting a
+	// transaction's non-quote cash leg into quote (see costConverter). A
+	// separate field from staleness — same value today, computed the same
+	// way — so the two can be tuned independently later without this
+	// becoming a breaking change.
+	txStaleness time.Duration
 }
 
 // dates is GetHistory's chart date axis: a bounded, evenly-spaced sample
@@ -50,17 +64,27 @@ func (p portfolio) history(dates []time.Time) (*History, error) {
 	if err != nil {
 		return nil, err
 	}
+	costs := p.newCostConverter()
 
 	points := make([]HistoryPoint, 0, len(dates))
 	txIdx := 0
 	shares := money.Zero
 	invested := money.Zero
+	investedKnown := true
 
 	for _, d := range dates {
-		// Fold in every transaction executed at-or-before this date.
+		// Fold in every transaction executed at-or-before this date. Once
+		// any transaction's cost can't be converted, invested is a
+		// permanently tainted running sum — it stays unknown (key absent)
+		// for this and every later point in this response, rather than
+		// quietly under-reporting it.
 		for txIdx < len(p.txs) && !p.txs[txIdx].Timestamp.After(d) {
 			shares = shares.Add(p.signedShares(p.txs[txIdx]))
-			invested = invested.Add(p.signedCost(p.txs[txIdx]))
+			if cost, ok := costs.cost(p.txs[txIdx]); ok {
+				invested = invested.Add(cost)
+			} else {
+				investedKnown = false
+			}
 			txIdx++
 		}
 
@@ -68,7 +92,10 @@ func (p portfolio) history(dates []time.Time) (*History, error) {
 			Date:       d,
 			StepCount:  stepCountAt(p.start, p.interval, d),
 			SharesHeld: shares,
-			Values:     map[string]money.Money{"invested": invested},
+			Values:     map[string]money.Money{},
+		}
+		if investedKnown {
+			pt.Values["invested"] = invested
 		}
 
 		var priceOK bool
@@ -144,16 +171,25 @@ func (p portfolio) toDisplay(h *History, display string) error {
 func (p portfolio) summary(now time.Time) (*Summary, error) {
 	sharesNow := money.Zero
 	invested := money.Zero
+	investedKnown := true
+	costs := p.newCostConverter()
 	for _, t := range p.txs {
 		sharesNow = sharesNow.Add(p.signedShares(t))
-		invested = invested.Add(p.signedCost(t))
+		if cost, ok := costs.cost(t); ok {
+			invested = invested.Add(cost)
+		} else {
+			investedKnown = false
+		}
 	}
 
 	sum := &Summary{
 		Base:       p.base,
 		Quote:      p.quote,
 		SharesHeld: sharesNow,
-		Values:     map[string]money.Money{"total_invested": invested},
+		Values:     map[string]money.Money{},
+	}
+	if investedKnown {
+		sum.Values["total_invested"] = invested
 	}
 
 	// Live current value from latest_prices (not candles).
@@ -167,7 +203,11 @@ func (p portfolio) summary(now time.Time) (*Summary, error) {
 	}
 	cv := money.FromPrice(price).Mul(sharesNow)
 	sum.Values["current_value"] = cv
-	sum.Values["gain_loss"] = cv.Sub(invested)
+	// gain_loss needs invested too; stays absent if that's unknown, same
+	// as total_invested.
+	if investedKnown {
+		sum.Values["gain_loss"] = cv.Sub(invested)
+	}
 	return sum, nil
 }
 
@@ -219,18 +259,82 @@ func (p portfolio) signedShares(t model.Transaction) money.Money {
 	}
 }
 
-// signedCost is the quote cash moved by a transaction (naive: proceeds from
-// a sale reduce basis directly — a noted v1 limitation). A transaction
-// touching neither side of p.quote contributes nothing.
-func (p portfolio) signedCost(t model.Transaction) money.Money {
+// costConverter is the quote cash moved by each transaction it's asked
+// about, converting a cash leg denominated in something other than the
+// strategy's own quote (e.g. paying in USDC for a USDT-quoted strategy) via
+// the pricer. It caches resolved routes across every transaction folded in
+// one history()/summary() call, so a currency that recurs across many
+// transactions isn't re-resolved per transaction (a resolved-but-missing
+// route is cached too — a currency the feed simply doesn't carry is only
+// looked up, and logged, once).
+type costConverter struct {
+	p      portfolio
+	routes map[string]*pricing.Route // nil value = resolved, no route exists
+}
+
+func (p portfolio) newCostConverter() *costConverter {
+	return &costConverter{p: p, routes: make(map[string]*pricing.Route)}
+}
+
+// cost is the quote-equivalent cash moved by transaction t: positive when
+// cash was spent (base was bought), negative when cash was received (base
+// was sold, reducing basis directly — a noted v1 limitation). A transaction
+// touching neither side of p.base — matched exactly, unlike quote; a
+// different asset is never treated as a differently-denominated cost —
+// contributes nothing. ok is false when the cash leg's symbol couldn't be
+// converted into quote (no route, or no price within the tx-staleness
+// window at t's timestamp); the caller must then treat its running invested
+// total as unknown from that point on, not silently short it by treating
+// the unconverted amount as zero.
+func (c *costConverter) cost(t model.Transaction) (money.Money, bool) {
 	switch {
-	case t.SpentSymbol == p.quote:
-		return t.SpentAmount
-	case t.GainedSymbol == p.quote:
-		return t.GainedAmount.Neg()
+	case t.GainedSymbol == c.p.base: // bought base; the spent leg is the cash paid
+		return c.cashLeg(t.SpentSymbol, t.SpentAmount, t.Timestamp)
+	case t.SpentSymbol == c.p.base: // sold base; the gained leg is the cash received
+		amt, ok := c.cashLeg(t.GainedSymbol, t.GainedAmount, t.Timestamp)
+		return amt.Neg(), ok
 	default:
-		return money.Zero
+		return money.Zero, true // neither leg touches base: genuinely unrelated
 	}
+}
+
+// cashLeg converts amount (denominated in symbol) into quote currency as of
+// at. Already being in quote needs no lookup or pricer call at all.
+func (c *costConverter) cashLeg(symbol string, amount money.Money, at time.Time) (money.Money, bool) {
+	if symbol == c.p.quote {
+		return amount, true
+	}
+
+	route, tried := c.routes[symbol]
+	if !tried {
+		r, found, err := c.p.pricer.ResolveRoute(symbol, c.p.quote)
+		switch {
+		case err != nil:
+			log.Printf("strategy: resolving %s->%s route for a transaction's cost: %v", symbol, c.p.quote, err)
+		case !found:
+			log.Printf("strategy: no %s->%s route; a transaction's cost can't be converted, invested totals from this point are unknown", symbol, c.p.quote)
+		}
+		if err != nil || !found {
+			c.routes[symbol] = nil
+			return money.Zero, false
+		}
+		c.routes[symbol] = r
+		route = r
+	}
+	if route == nil {
+		return money.Zero, false // cached miss from an earlier transaction
+	}
+
+	price, ok, err := c.p.pricer.PriceAtRoute(route, at, c.p.txStaleness)
+	if err != nil {
+		log.Printf("strategy: pricing %s->%s at %v: %v", symbol, c.p.quote, at, err)
+		return money.Zero, false
+	}
+	if !ok {
+		log.Printf("strategy: no %s->%s price within the staleness window at %v; a transaction's cost can't be converted, invested totals from this point are unknown", symbol, c.p.quote, at)
+		return money.Zero, false
+	}
+	return amount.Mul(money.FromPrice(price)), true
 }
 
 func cloneValues(v map[string]money.Money) map[string]money.Money {

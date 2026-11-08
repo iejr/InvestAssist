@@ -139,7 +139,11 @@ func (l *Loader) Load(id uuid.UUID) (Strategy, error) {
 		interval:  strat.Interval,
 		increment: strat.Increment,
 		txs:       txs,
-		staleness: maxStaleness(strat.Interval, l.stalenessOverride),
+		// Same value today; kept as two fields (see portfolio's
+		// txStaleness doc) so they can diverge later without a signature
+		// change.
+		staleness:   maxStaleness(strat.Interval, l.stalenessOverride),
+		txStaleness: maxStaleness(strat.Interval, l.stalenessOverride),
 	}
 
 	switch strat.Type {

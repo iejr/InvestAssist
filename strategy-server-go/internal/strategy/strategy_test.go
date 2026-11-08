@@ -243,6 +243,53 @@ func TestVA_ClampToStart_AtOrAfterStart_Unchanged(t *testing.T) {
 	}
 }
 
+// --- costConverter ---
+//
+// Only the paths that don't call the pricer are covered here (no
+// Redis/Postgres test harness exists for *pricing.Pricer in this repo —
+// see internal/pricing's own tests, which likewise only exercise the pure
+// graph helpers). Cross-currency conversion itself needs an integration
+// test against a real Pricer.
+
+func TestCostConverter_SameQuoteSymbol_BoughtBase_NoPricerCall(t *testing.T) {
+	pf := portfolio{base: "BTC", quote: "USDT"}
+	c := pf.newCostConverter()
+	tx := model.Transaction{
+		SpentSymbol: "USDT", SpentAmount: money.FromInt(100),
+		GainedSymbol: "BTC", GainedAmount: money.FromInt(1),
+	}
+	got, ok := c.cost(tx)
+	if !ok || !got.Equal(money.FromInt(100)) {
+		t.Fatalf("cost = %v, ok=%v, want 100, true", got, ok)
+	}
+}
+
+func TestCostConverter_SameQuoteSymbol_SoldBase_NegatedAndNoPricerCall(t *testing.T) {
+	pf := portfolio{base: "BTC", quote: "USDT"}
+	c := pf.newCostConverter()
+	tx := model.Transaction{
+		SpentSymbol: "BTC", SpentAmount: money.FromInt(1),
+		GainedSymbol: "USDT", GainedAmount: money.FromInt(100),
+	}
+	got, ok := c.cost(tx)
+	if !ok || !got.Equal(money.FromInt(-100)) {
+		t.Fatalf("cost = %v, ok=%v, want -100, true", got, ok)
+	}
+}
+
+func TestCostConverter_NeitherLegTouchesBase_IsKnownZero(t *testing.T) {
+	pf := portfolio{base: "BTC", quote: "USDT"}
+	c := pf.newCostConverter()
+	tx := model.Transaction{
+		SpentSymbol: "ETH", SpentAmount: money.FromInt(1),
+		GainedSymbol: "SOL", GainedAmount: money.FromInt(1),
+	}
+	got, ok := c.cost(tx)
+	if !ok || !got.Equal(money.Zero) {
+		t.Fatalf("cost = %v, ok=%v, want 0, true", got, ok)
+	}
+}
+
 func TestVA_ClampToStart_BeforeStart_ClampsToStart(t *testing.T) {
 	start := day(2026, 2, 1)
 	va := newVA(start, model.IntervalWeekly, money.FromInt(100))
