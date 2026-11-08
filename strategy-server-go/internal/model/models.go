@@ -6,6 +6,8 @@ package model
 import (
 	"time"
 
+	"strategy-server-go/internal/money"
+
 	"github.com/google/uuid"
 	"gorm.io/gorm"
 )
@@ -47,7 +49,7 @@ type Strategy struct {
 	Quote     string       `json:"quote"` // accounting currency, e.g. USDT
 	StartDate time.Time    `json:"start_date"`
 	Interval  Interval     `json:"interval"`
-	Increment float64      `json:"increment"` // per-step target growth, in Quote units
+	Increment money.Money  `gorm:"type:numeric" json:"increment"` // per-step target growth, in Quote units
 
 	CreatedAt time.Time      `json:"created_at"`
 	UpdatedAt time.Time      `json:"updated_at"`
@@ -63,10 +65,10 @@ type Transaction struct {
 	ID         uuid.UUID `gorm:"type:uuid;primaryKey" json:"id"`
 	StrategyID uuid.UUID `gorm:"type:uuid;index" json:"strategy_id"`
 
-	SpentSymbol  string  `json:"spent_symbol"`
-	SpentAmount  float64 `json:"spent_amount"`
-	GainedSymbol string  `json:"gained_symbol"`
-	GainedAmount float64 `json:"gained_amount"`
+	SpentSymbol  string      `json:"spent_symbol"`
+	SpentAmount  money.Money `gorm:"type:numeric" json:"spent_amount"`
+	GainedSymbol string      `json:"gained_symbol"`
+	GainedAmount money.Money `gorm:"type:numeric" json:"gained_amount"`
 
 	Memo      string    `json:"memo"` // free text; not used in any calculation
 	Timestamp time.Time `json:"timestamp"`

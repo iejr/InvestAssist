@@ -1,8 +1,11 @@
 import axios from 'axios';
 
 // API client for strategy-server-go. All money fields are in the strategy's
-// quote currency; display_* mirrors are in the requested display currency and
-// may be null when the display conversion is unavailable at that point.
+// quote currency, serialized as decimal strings (not JS numbers) so they
+// round-trip exactly — parse with Number()/parseFloat only for display
+// formatting, never for further arithmetic (money math stays server-side).
+// display_* mirrors are in the requested display currency and the key is
+// absent entirely when that conversion is unavailable at that point.
 
 export type StrategyType = 'VA' | 'DCA';
 export type Interval = 'weekly' | 'monthly';
@@ -15,7 +18,7 @@ export interface Strategy {
   quote: string;
   start_date: string;
   interval: Interval;
-  increment: number;
+  increment: string;
 }
 
 export interface CreateStrategyReq {
@@ -28,16 +31,22 @@ export interface CreateStrategyReq {
   increment: number;
 }
 
+// SeriesMeta describes one named curve in HistoryPoint.values, so the chart
+// can render whatever a strategy exposes without hardcoding which keys
+// exist for which strategy type.
+export interface SeriesMeta {
+  key: string;
+  label: string;
+}
+
 export interface HistoryPoint {
   date: string;
   step_count: number;
-  shares_held: number;
-  target: number;
-  actual: number | null;
-  recommended_contribution: number | null;
-  display_target: number | null;
-  display_actual: number | null;
-  display_recommended_contribution: number | null;
+  shares_held: string;
+  // Keyed by SeriesMeta.key (see History.series). A key's absence means
+  // that value is unknown at this point (e.g. price missing).
+  values: Record<string, string>;
+  display_values?: Record<string, string>;
   missing: boolean;
 }
 
@@ -46,6 +55,7 @@ export interface History {
   base: string;
   quote: string;
   display: string;
+  series: SeriesMeta[];
   points: HistoryPoint[];
 }
 
@@ -54,17 +64,12 @@ export interface Summary {
   base: string;
   quote: string;
   display: string;
-  shares_held: number;
-  target: number;
-  actual: number | null;
-  current_value: number | null;
-  total_invested: number;
-  gain_loss: number | null;
-  next_recommended_contribution: number | null;
-  display_current_value: number | null;
-  display_total_invested: number | null;
-  display_gain_loss: number | null;
-  display_next_recommended_contribution: number | null;
+  shares_held: string;
+  // Known keys: total_invested (always), current_value/gain_loss/
+  // next_recommended_contribution (absent when price is stale), plus any
+  // strategy-specific extras (e.g. VA's "target").
+  values: Record<string, string>;
+  display_values?: Record<string, string>;
   price_stale: boolean;
 }
 
@@ -72,9 +77,9 @@ export interface Transaction {
   id: string;
   strategy_id: string;
   spent_symbol: string;
-  spent_amount: number;
+  spent_amount: string;
   gained_symbol: string;
-  gained_amount: number;
+  gained_amount: string;
   memo: string;
   timestamp: string;
 }

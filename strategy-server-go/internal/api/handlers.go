@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"strategy-server-go/internal/model"
+	"strategy-server-go/internal/money"
 	"strategy-server-go/internal/pricing"
 	"strategy-server-go/internal/strategy"
 
@@ -21,16 +22,16 @@ import (
 type Handler struct {
 	db     *gorm.DB
 	pricer *pricing.Pricer
-	svc    *strategy.Service
+	loader *strategy.Loader
 	now    func() time.Time
 }
 
 // New builds a Handler. now is injectable for tests; nil ⇒ time.Now.
-func New(db *gorm.DB, pricer *pricing.Pricer, svc *strategy.Service, now func() time.Time) *Handler {
+func New(db *gorm.DB, pricer *pricing.Pricer, loader *strategy.Loader, now func() time.Time) *Handler {
 	if now == nil {
 		now = time.Now
 	}
-	return &Handler{db: db, pricer: pricer, svc: svc, now: now}
+	return &Handler{db: db, pricer: pricer, loader: loader, now: now}
 }
 
 // Register wires the routes onto e.
@@ -88,7 +89,7 @@ type createStrategyReq struct {
 	Quote     string             `json:"quote"`
 	StartDate string             `json:"start_date"`
 	Interval  model.Interval     `json:"interval"`
-	Increment float64            `json:"increment"`
+	Increment money.Money        `json:"increment"`
 }
 
 func (h *Handler) createStrategy(c echo.Context) error {
@@ -156,10 +157,15 @@ func (h *Handler) getHistory(c echo.Context) error {
 	rangeFrom := parseRange(c.QueryParam("range"), now)
 	maxPoints := parseMaxPoints(c.QueryParam("max_points"))
 
-	hist, err := h.svc.GetHistory(id, display, rangeFrom, now, maxPoints)
+	strat, err := h.loader.Load(id)
 	if err != nil {
 		return notFoundOrErr(c, err)
 	}
+	hist, err := strat.GetHistory(display, rangeFrom, now, maxPoints)
+	if err != nil {
+		return serverErr(c, err)
+	}
+	hist.StrategyID = id
 	return c.JSON(http.StatusOK, hist)
 }
 
@@ -169,10 +175,15 @@ func (h *Handler) getSummary(c echo.Context) error {
 		return badRequest(c, "invalid id")
 	}
 	display := strings.TrimSpace(c.QueryParam("display"))
-	sum, err := h.svc.GetSummary(id, display, h.now())
+	strat, err := h.loader.Load(id)
 	if err != nil {
 		return notFoundOrErr(c, err)
 	}
+	sum, err := strat.GetSummary(display, h.now())
+	if err != nil {
+		return serverErr(c, err)
+	}
+	sum.StrategyID = id
 	return c.JSON(http.StatusOK, sum)
 }
 
@@ -181,9 +192,13 @@ func (h *Handler) getDisplayCurrencies(c echo.Context) error {
 	if err != nil {
 		return badRequest(c, "invalid id")
 	}
-	options, def, err := h.svc.DisplayCurrencies(id)
+	strat, err := h.loader.Load(id)
 	if err != nil {
 		return notFoundOrErr(c, err)
+	}
+	options, def, err := strat.DisplayCurrencies()
+	if err != nil {
+		return serverErr(c, err)
 	}
 	return c.JSON(http.StatusOK, map[string]any{"options": options, "default": def})
 }
@@ -207,13 +222,13 @@ func (h *Handler) listTransactions(c echo.Context) error {
 
 // createTransactionReq is the record-transaction body.
 type createTransactionReq struct {
-	StrategyID   string  `json:"strategy_id"`
-	SpentSymbol  string  `json:"spent_symbol"`
-	SpentAmount  float64 `json:"spent_amount"`
-	GainedSymbol string  `json:"gained_symbol"`
-	GainedAmount float64 `json:"gained_amount"`
-	Memo         string  `json:"memo"`
-	Timestamp    string  `json:"timestamp"`
+	StrategyID   string      `json:"strategy_id"`
+	SpentSymbol  string      `json:"spent_symbol"`
+	SpentAmount  money.Money `json:"spent_amount"`
+	GainedSymbol string      `json:"gained_symbol"`
+	GainedAmount money.Money `json:"gained_amount"`
+	Memo         string      `json:"memo"`
+	Timestamp    string      `json:"timestamp"`
 }
 
 func (h *Handler) createTransaction(c echo.Context) error {

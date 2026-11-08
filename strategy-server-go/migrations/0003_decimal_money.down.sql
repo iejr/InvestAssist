@@ -1,0 +1,6 @@
+ALTER TABLE transactions
+    ALTER COLUMN spent_amount TYPE DOUBLE PRECISION,
+    ALTER COLUMN gained_amount TYPE DOUBLE PRECISION;
+
+ALTER TABLE strategies
+    ALTER COLUMN increment TYPE DOUBLE PRECISION;

@@ -26,8 +26,8 @@ func main() {
 	rdb := redis.NewClient(&redis.Options{Addr: cfg.RedisAddr, DB: cfg.RedisDB, Password: cfg.RedisPassword})
 
 	pricer := pricing.New(rdb, pg)
-	svc := strategy.New(pg, pricer, cfg.MaxStalenessOverride)
-	h := api.New(pg, pricer, svc, nil)
+	loader := strategy.New(pg, pricer, cfg.MaxStalenessOverride)
+	h := api.New(pg, pricer, loader, nil)
 
 	e := echo.New()
 	e.HideBanner = true
